@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Stars — White Tee</title>
+  <title>Stars</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -21,30 +21,28 @@
     }
     .back {
       position: fixed;
-      top: 16px;
-      left: 16px;
-      color: rgba(255, 255, 255, 0.35);
+      top: 14px;
+      left: 14px;
+      color: #555;
       text-decoration: none;
-      font-size: 15px;
+      font-size: 14px;
       z-index: 10;
-      padding: 6px 10px;
     }
     .controls {
       position: fixed;
-      bottom: 28px;
+      bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 10;
     }
     button {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      color: #ddd;
-      padding: 12px 26px;
-      border-radius: 12px;
-      cursor: pointer;
-      font-size: 15px;
-      min-width: 200px;
+      background: #000;
+      border: 1px solid #333;
+      color: #bbb;
+      padding: 11px 24px;
+      border-radius: 10px;
+      font-size: 14px;
+      min-width: 170px;
     }
   </style>
 </head>
@@ -73,7 +71,7 @@
     const BEAT_MS = 60000 / BPM;
 
     function resize() {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = window.innerWidth * dpr;
       canvas.height = window.innerHeight * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -81,63 +79,64 @@
     resize();
     window.addEventListener('resize', resize);
 
-    function createStars(count = 220) {
-      stars = [];
+    // Добавляем несколько новых звёзд
+    function addStars(count) {
       for (let i = 0; i < count; i++) {
         stars.push({
           x: Math.random() * window.innerWidth,
           y: Math.random() * window.innerHeight,
-          size: 0.6 + Math.random() * 1.3,      // маленькие точки
-          baseAlpha: 0.25 + Math.random() * 0.55,
-          twinkleSpeed: 0.008 + Math.random() * 0.02,
+          size: 0.5 + Math.random() * 1.1,
+          alpha: 0,
+          targetAlpha: 0.3 + Math.random() * 0.55,
+          twinkleSpeed: 0.01 + Math.random() * 0.02,
           phase: Math.random() * Math.PI * 2
         });
       }
     }
-    createStars();
 
     function draw(timestamp) {
-      // Абсолютно чёрный фон каждый кадр
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
       const time = timestamp * 0.001;
 
-      for (const s of stars) {
-        let alpha = s.baseAlpha;
+      for (let i = stars.length - 1; i >= 0; i--) {
+        const s = stars[i];
 
-        if (isPlaying) {
-          // Лёгкое мерцание
-          const twinkle = Math.sin(time * s.twinkleSpeed * 50 + s.phase) * 0.3 + 0.7;
-          alpha *= twinkle;
-        } else {
-          alpha *= 0.45;
+        // Плавное появление
+        if (s.alpha < s.targetAlpha) {
+          s.alpha += 0.012;
         }
 
-        // Только чистая точка, без какого-либо свечения
+        let a = s.alpha;
+        if (isPlaying) {
+          const twinkle = Math.sin(time * s.twinkleSpeed * 45 + s.phase) * 0.25 + 0.75;
+          a *= twinkle;
+        }
+
         ctx.beginPath();
         ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
         ctx.fill();
       }
 
-      // Ритм
       if (isPlaying) {
         const elapsed = timestamp - startTime;
         if (elapsed - lastBeat >= BEAT_MS) {
           lastBeat = elapsed;
+          // На каждый бит добавляем немного новых звёзд
+          addStars(4 + Math.floor(Math.random() * 5));
 
-          // На бит некоторые звёзды становятся чуть ярче
-          for (let i = 0; i < 18; i++) {
-            const s = stars[Math.floor(Math.random() * stars.length)];
-            s.baseAlpha = Math.min(0.95, s.baseAlpha + 0.35);
+          // Иногда чуть больше
+          if (Math.floor(elapsed / BEAT_MS) % 4 === 0) {
+            addStars(8);
           }
         }
+      }
 
-        // Плавно возвращаем яркость
-        for (const s of stars) {
-          s.baseAlpha += (0.35 - s.baseAlpha) * 0.025;
-        }
+      // Ограничение количества
+      if (stars.length > 350) {
+        stars.splice(0, stars.length - 350);
       }
 
       requestAnimationFrame(draw);
@@ -150,20 +149,16 @@
           isPlaying = true;
           startTime = performance.now();
           lastBeat = 0;
+          stars = [];               // начинаем с пустого неба
           playBtn.textContent = '⏸ Пауза';
         } catch (e) {
-          alert('Не удалось запустить аудио.\nПроверьте файл white_tee.mp3');
+          alert('Не удалось запустить аудио');
         }
       } else {
         audio.pause();
         isPlaying = false;
         playBtn.textContent = '▶ Запустить';
       }
-    });
-
-    // Пересоздаём звёзды при изменении размера экрана
-    window.addEventListener('resize', () => {
-      createStars();
     });
 
     requestAnimationFrame(draw);
