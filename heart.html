@@ -54,7 +54,7 @@
     <button id="playBtn">▶ Запустить</button>
   </div>
 
-  <audio id="audio" src="white_tee.mp3" loop preload="auto"></audio>
+  <audio id="audio" src="white_tee.mp3" loop preload="auto" crossorigin="anonymous"></audio>
 
   <script>
     const canvas = document.getElementById('canvas');
@@ -64,13 +64,10 @@
 
     let particles = [];
     let isPlaying = false;
-    let lastBeat = 0;
-    let startTime = 0;
-    let scalePulse = 1;
+    let audioCtx, analyser, dataArray;
+    let lastBass = 0;
 
-    const BPM = 150;
-    const BEAT_MS = 60000 / BPM;
-    const colors = ['#ff4d8d', '#ff6b9d', '#ff8fb8', '#e91e8c', '#ff5e9c'];
+    const colors = ['#ff4d8d', '#ff6b9d', '#ff8fb8', '#e91e8c', '#ff5e9c', '#ff79b0'];
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -88,87 +85,121 @@
     }
 
     function spawnBurst(intensity = 1) {
-      // Уменьшенный масштаб сердца под телефон
-      const baseScale = Math.min(window.innerWidth, window.innerHeight) / 55;
-      const count = Math.floor(80 + Math.random() * 50) * intensity;
+      const baseScale = Math.min(window.innerWidth, window.innerHeight) / 58;
+      const count = Math.floor(70 * intensity + Math.random() * 40 * intensity);
 
       for (let i = 0; i < count; i++) {
         const a = Math.random() * Math.PI * 2;
-        const sc = (0.6 + Math.random() * 11.5) * scalePulse * (baseScale / 12);
+        const sc = (0.55 + Math.random() * 11) * (baseScale / 12);
         const pos = heart(a, sc);
-        const spread = (Math.random() - 0.5) * 2.5;
+        const spread = (Math.random() - 0.5) * 2.8;
 
         particles.push({
           x: pos.x + spread,
           y: pos.y + spread,
-          size: 0.55 + Math.random() * 1.0,
+          size: 0.5 + Math.random() * 1.05,
           color: colors[Math.floor(Math.random() * colors.length)],
           life: 1,
-          decay: 0.0045 + Math.random() * 0.005,
-          vx: (Math.random() - 0.5) * 0.18,
-          vy: (Math.random() - 0.5) * 0.18
+          decay: 0.0048 + Math.random() * 0.006,
+          vx: (Math.random() - 0.5) * 0.35 * intensity,
+          vy: (Math.random() - 0.5) * 0.35 * intensity
         });
       }
     }
 
-    function draw(timestamp) {
-      // Полностью чёрный фон каждый кадр
+    function getBassEnergy() {
+      if (!analyser) return 0;
+      analyser.getByteFrequencyData(dataArray);
+
+      // Берём только самые низкие частоты (бас / кик)
+      let sum = 0;
+      const bassBins = 8; // низкие частоты
+      for (let i = 0; i < bassBins; i++) {
+        sum += dataArray[i];
+      }
+      return sum / bassBins / 255; // от 0 до 1
+    }
+
+    function draw() {
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
       const cx = window.innerWidth / 2;
-      const cy = window.innerHeight / 2 - 20; // чуть выше центра
+      const cy = window.innerHeight / 2 - 15;
 
-      if (isPlaying) {
-        const elapsed = timestamp - startTime;
-        if (elapsed - lastBeat >= BEAT_MS) {
-          lastBeat = elapsed;
-          scalePulse = 1.09;
-          spawnBurst(1);
-          if (Math.floor(elapsed / BEAT_MS) % 4 === 0) {
-            spawnBurst(1.25);
-            scalePulse = 1.16;
-          }
+      if (isPlaying && analyser) {
+        const bass = getBassEnergy();
+
+        // Реагируем на резкий рост баса (удар)
+        if (bass > 0.42 && bass - lastBass > 0.08) {
+          // Сильный удар баса → большой выброс
+          const intensity = 1.2 + bass * 2.2;
+          spawnBurst(intensity);
+        } 
+        // Средний уровень баса → небольшие точки
+        else if (bass > 0.28 && Math.random() < 0.35) {
+          spawnBurst(0.45 + bass);
         }
-        scalePulse += (1 - scalePulse) * 0.09;
+
+        lastBass = bass;
       }
 
+      // Рисуем частицы
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.life -= p.decay;
         p.x += p.vx;
         p.y += p.vy;
+        p.vx *= 0.98;
+        p.vy *= 0.98;
 
         if (p.life <= 0) {
           particles.splice(i, 1);
           continue;
         }
 
-        // Только чистая точка, без обводки и свечения
         ctx.beginPath();
         ctx.arc(cx + p.x, cy + p.y, p.size * p.life, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
-        ctx.globalAlpha = p.life * 0.88;
+        ctx.globalAlpha = p.life * 0.9;
         ctx.fill();
       }
       ctx.globalAlpha = 1;
 
-      if (particles.length > 3800) particles.splice(0, particles.length - 3800);
+      if (particles.length > 4200) {
+        particles.splice(0, particles.length - 4200);
+      }
+
       requestAnimationFrame(draw);
+    }
+
+    async function initAudio() {
+      if (audioCtx) return;
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(audio);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
     }
 
     playBtn.addEventListener('click', async () => {
       if (!isPlaying) {
         try {
+          await initAudio();
+          if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+          }
           await audio.play();
           isPlaying = true;
-          startTime = performance.now();
-          lastBeat = 0;
           particles = [];
-          spawnBurst(1.3);
           playBtn.textContent = '⏸ Пауза';
         } catch (e) {
           alert('Не удалось запустить аудио');
+          console.error(e);
         }
       } else {
         audio.pause();
