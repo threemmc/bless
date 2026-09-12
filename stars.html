@@ -7,53 +7,31 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      width: 100%;
-      height: 100%;
-      background: #000000;
+      width: 100%; height: 100%;
+      background: #000;
       overflow: hidden;
       touch-action: none;
     }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-      background: #000000;
-    }
+    canvas { display: block; width: 100%; height: 100%; background: #000; }
     .back {
-      position: fixed;
-      top: 14px;
-      left: 14px;
-      color: #555;
-      text-decoration: none;
-      font-size: 14px;
-      z-index: 10;
+      position: fixed; top: 14px; left: 14px;
+      color: #555; text-decoration: none; font-size: 14px; z-index: 10;
     }
     .controls {
-      position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 10;
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10;
     }
     button {
-      background: #000;
-      border: 1px solid #333;
-      color: #bbb;
-      padding: 11px 24px;
-      border-radius: 10px;
-      font-size: 14px;
-      min-width: 170px;
+      background: #000; border: 1px solid #333; color: #bbb;
+      padding: 11px 24px; border-radius: 10px; font-size: 14px; min-width: 170px;
     }
   </style>
 </head>
 <body>
   <a href="index.html" class="back">← меню</a>
   <canvas id="canvas"></canvas>
-
   <div class="controls">
     <button id="playBtn">▶ Запустить</button>
   </div>
-
   <audio id="audio" src="white_tee.mp3" loop preload="auto" crossorigin="anonymous"></audio>
 
   <script>
@@ -65,7 +43,6 @@
     let stars = [];
     let isPlaying = false;
     let audioCtx, analyser, dataArray;
-    let lastBass = 0;
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -76,99 +53,81 @@
     resize();
     window.addEventListener('resize', resize);
 
-    function addStars(count, brightness = 0.5) {
+    function addStars(count, brightness = 1) {
       for (let i = 0; i < count; i++) {
         stars.push({
           x: Math.random() * window.innerWidth,
           y: Math.random() * window.innerHeight,
-          size: 0.5 + Math.random() * 1.15,
+          size: 0.5 + Math.random() * 1.3 * brightness,
           alpha: 0,
-          targetAlpha: 0.25 + Math.random() * 0.55 * brightness,
-          twinkleSpeed: 0.01 + Math.random() * 0.02,
+          target: 0.3 + Math.random() * 0.6 * brightness,
+          speed: 0.01 + Math.random() * 0.025,
           phase: Math.random() * Math.PI * 2,
           life: 1
         });
       }
     }
 
-    function getBassEnergy() {
-      if (!analyser) return 0;
+    function getLevels() {
       analyser.getByteFrequencyData(dataArray);
-
-      let sum = 0;
-      const bassBins = 8;
-      for (let i = 0; i < bassBins; i++) {
-        sum += dataArray[i];
-      }
-      return sum / bassBins / 255;
+      let bass = 0, mid = 0;
+      for (let i = 0; i < 14; i++) bass += dataArray[i];
+      for (let i = 14; i < 50; i++) mid += dataArray[i];
+      bass /= 14 * 255;
+      mid  /= 36 * 255;
+      return { bass, mid, energy: bass * 0.65 + mid * 0.35 };
     }
 
-    function draw(timestamp) {
-      ctx.fillStyle = '#000000';
+    function draw(t) {
+      ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
-      const time = timestamp * 0.001;
+      const time = t * 0.001;
 
-      // Анализ баса
       if (isPlaying && analyser) {
-        const bass = getBassEnergy();
+        const { bass, energy } = getLevels();
 
-        // Сильный удар баса
-        if (bass > 0.43 && bass - lastBass > 0.09) {
-          const intensity = 1.1 + bass * 2.5;
-          addStars(Math.floor(6 + intensity * 8), intensity);
+        if (energy > 0.16) {
+          const amount = Math.floor(2 + energy * 18);
+          if (Math.random() < 0.5 + energy * 0.5) {
+            addStars(amount, 0.7 + energy);
+          }
         }
-        // Средний уровень баса — редкое появление
-        else if (bass > 0.30 && Math.random() < 0.22) {
-          addStars(2 + Math.floor(bass * 4), 0.7);
+        if (bass > 0.48) {
+          addStars(Math.floor(8 + bass * 20), 1.3 + bass);
         }
-
-        lastBass = bass;
       }
 
-      // Рисуем звёзды
       for (let i = stars.length - 1; i >= 0; i--) {
         const s = stars[i];
-
-        // Плавное появление
-        if (s.alpha < s.targetAlpha) {
-          s.alpha += 0.018;
-        }
-
-        // Медленное затухание со временем
-        s.life -= 0.0012;
+        if (s.alpha < s.target) s.alpha += 0.02;
+        s.life -= 0.0015;
         if (s.life <= 0) {
           stars.splice(i, 1);
           continue;
         }
 
-        let a = s.alpha * s.life;
-        const twinkle = Math.sin(time * s.twinkleSpeed * 45 + s.phase) * 0.22 + 0.78;
-        a *= twinkle;
+        const tw = Math.sin(time * s.speed * 50 + s.phase) * 0.2 + 0.8;
+        const a = s.alpha * s.life * tw;
 
         ctx.beginPath();
         ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
+        ctx.fillStyle = `rgba(255,255,255,${a})`;
         ctx.fill();
       }
 
-      // Ограничение количества
-      if (stars.length > 380) {
-        stars.splice(0, stars.length - 380);
-      }
-
+      if (stars.length > 420) stars.splice(0, stars.length - 420);
       requestAnimationFrame(draw);
     }
 
     async function initAudio() {
       if (audioCtx) return;
-
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaElementSource(audio);
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.3;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
-
       source.connect(analyser);
       analyser.connect(audioCtx.destination);
     }
@@ -177,16 +136,13 @@
       if (!isPlaying) {
         try {
           await initAudio();
-          if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-          }
+          if (audioCtx.state === 'suspended') await audioCtx.resume();
           await audio.play();
           isPlaying = true;
-          stars = [];                 // начинаем с пустого неба
+          stars = [];
           playBtn.textContent = '⏸ Пауза';
         } catch (e) {
-          alert('Не удалось запустить аудио');
-          console.error(e);
+          alert('Ошибка аудио');
         }
       } else {
         audio.pause();
