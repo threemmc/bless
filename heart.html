@@ -8,30 +8,50 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%; height: 100%;
-      background: #000;
+      background: #000000;
       overflow: hidden;
       touch-action: none;
     }
-    canvas { display: block; width: 100%; height: 100%; background: #000; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #000000;
+    }
     .back {
-      position: fixed; top: 14px; left: 14px;
-      color: #555; text-decoration: none; font-size: 14px; z-index: 10;
+      position: fixed;
+      top: 14px; left: 14px;
+      color: #555;
+      text-decoration: none;
+      font-size: 14px;
+      z-index: 10;
     }
     .controls {
-      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10;
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
     }
     button {
-      background: #000; border: 1px solid #333; color: #bbb;
-      padding: 11px 24px; border-radius: 10px; font-size: 14px; min-width: 170px;
+      background: #000;
+      border: 1px solid #333;
+      color: #bbb;
+      padding: 11px 24px;
+      border-radius: 10px;
+      font-size: 14px;
+      min-width: 170px;
     }
   </style>
 </head>
 <body>
   <a href="index.html" class="back">← меню</a>
   <canvas id="canvas"></canvas>
+
   <div class="controls">
     <button id="playBtn">▶ Запустить</button>
   </div>
+
   <audio id="audio" src="white_tee.mp3" loop preload="auto" crossorigin="anonymous"></audio>
 
   <script>
@@ -43,9 +63,9 @@
     let particles = [];
     let isPlaying = false;
     let audioCtx, analyser, dataArray;
-    let explode = 0; // сила разлёта
+    let explode = 0;
 
-    const colors = ['#ff4d8d','#ff6b9d','#ff8fb8','#e91e8c','#ff5e9c'];
+    const colors = ['#ff4d8d', '#ff6b9d', '#ff8fb8', '#e91e8c', '#ff5e9c'];
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -58,90 +78,106 @@
 
     function heart(a, scale) {
       const x = 16 * Math.pow(Math.sin(a), 3) * scale;
-      const y = (13 * Math.cos(a) - 5 * Math.cos(2*a) - 2 * Math.cos(3*a) - Math.cos(4*a)) * scale;
+      const y = (13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)) * scale;
       return { x, y: -y };
     }
 
-    function createParticle() {
+    function createParticle(scaleMult = 1) {
       const base = Math.min(window.innerWidth, window.innerHeight) / 56;
       const a = Math.random() * Math.PI * 2;
-      const sc = (0.6 + Math.random() * 11) * (base / 12);
+      const sc = (0.55 + Math.random() * 11) * (base / 12) * scaleMult;
       const pos = heart(a, sc);
 
       return {
-        // целевая позиция (форма сердца)
         tx: pos.x,
         ty: pos.y,
-        // текущая позиция
         x: pos.x,
         y: pos.y,
-        size: 0.55 + Math.random() * 1.1,
+        size: 0.5 + Math.random() * 1.15,
         color: colors[Math.floor(Math.random() * colors.length)],
         life: 1,
-        decay: 0.003 + Math.random() * 0.004,
-        // скорость разлёта
+        decay: 0.0028 + Math.random() * 0.004,
         vx: 0,
         vy: 0
       };
     }
 
-    // Создаём базовое количество частиц сердца
     function initHeart() {
       particles = [];
-      for (let i = 0; i < 900; i++) {
+      for (let i = 0; i < 850; i++) {
         particles.push(createParticle());
       }
     }
 
-    function getBass() {
+    // Трёхполосный анализ
+    function getBands() {
       analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < 11; i++) sum += dataArray[i];
-      return sum / 11 / 255;
+
+      let low = 0, mid = 0, high = 0;
+
+      for (let i = 0; i < 12; i++) low += dataArray[i];
+      low = low / 12 / 255;
+
+      for (let i = 12; i < 45; i++) mid += dataArray[i];
+      mid = mid / 33 / 255;
+
+      for (let i = 45; i < 90; i++) high += dataArray[i];
+      high = high / 45 / 255;
+
+      return { low, mid, high };
     }
 
     function draw() {
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
       const cx = window.innerWidth / 2;
       const cy = window.innerHeight / 2 - 12;
 
       if (isPlaying && analyser) {
-        const bass = getBass();
+        const { low, mid, high } = getBands();
 
-        // На сильный кик — включаем разлёт
-        if (bass > 0.46) {
-          explode = Math.min(1, explode + 0.18);
+        // === РЕАКЦИЯ НА ЧАСТОТЫ ===
+
+        // Низкие (бас / кик) → сильный разлёт
+        if (low > 0.45) {
+          explode = Math.min(1, explode + 0.22);
         } else {
-          explode = Math.max(0, explode - 0.035); // плавно возвращаемся
+          explode = Math.max(0, explode - 0.03);
         }
 
-        // Иногда добавляем новые точки
-        if (bass > 0.33 && Math.random() < 0.3) {
-          particles.push(createParticle());
+        // Средние частоты → добавляем точки
+        if (mid > 0.32 && Math.random() < 0.35) {
+          particles.push(createParticle(0.9 + mid * 0.4));
+        }
+
+        // Высокие частоты → мелкие точки
+        if (high > 0.28 && Math.random() < 0.25) {
+          const p = createParticle(0.7);
+          p.size *= 0.7;
+          particles.push(p);
         }
       }
 
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
 
-        if (explode > 0.05) {
-          // Разлёт во все стороны
-          const angle = Math.atan2(p.y, p.x) + (Math.random() - 0.5) * 0.8;
-          const force = explode * (3.5 + Math.random() * 4);
-          p.vx += Math.cos(angle) * force * 0.15;
-          p.vy += Math.sin(angle) * force * 0.15;
+        if (explode > 0.06) {
+          // Разлёт от центра
+          const angle = Math.atan2(p.y, p.x) + (Math.random() - 0.5) * 0.9;
+          const force = explode * (4 + Math.random() * 5);
+          p.vx += Math.cos(angle) * force * 0.14;
+          p.vy += Math.sin(angle) * force * 0.14;
         } else {
           // Возврат к форме сердца
-          p.vx += (p.tx - p.x) * 0.045;
-          p.vy += (p.ty - p.y) * 0.045;
+          p.vx += (p.tx - p.x) * 0.04;
+          p.vy += (p.ty - p.y) * 0.04;
         }
 
         p.x += p.vx;
         p.y += p.vy;
-        p.vx *= 0.92;
-        p.vy *= 0.92;
+        p.vx *= 0.91;
+        p.vy *= 0.91;
 
         p.life -= p.decay;
         if (p.life <= 0) {
@@ -157,7 +193,7 @@
       }
       ctx.globalAlpha = 1;
 
-      if (particles.length > 1600) particles.splice(0, particles.length - 1600);
+      if (particles.length > 1700) particles.splice(0, particles.length - 1700);
       requestAnimationFrame(draw);
     }
 
@@ -165,10 +201,12 @@
       if (audioCtx) return;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaElementSource(audio);
+
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.35;
+      analyser.smoothingTimeConstant = 0.4;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
+
       source.connect(analyser);
       analyser.connect(audioCtx.destination);
     }
