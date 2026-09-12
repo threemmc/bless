@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Heart — White Tee</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+    }
+    canvas { display: block; }
+    .back {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      color: rgba(255, 180, 210, 0.45);
+      text-decoration: none;
+      font-size: 14px;
+      z-index: 10;
+      transition: color 0.2s;
+    }
+    .back:hover { color: #ff9ec0; }
+    .controls {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+    }
+    button {
+      background: rgba(255, 90, 150, 0.2);
+      border: 1px solid rgba(255, 140, 180, 0.45);
+      color: #ffb0d0;
+      padding: 11px 22px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+      backdrop-filter: blur(8px);
+      transition: background 0.2s;
+    }
+    button:hover { background: rgba(255, 90, 150, 0.35); }
+  </style>
+</head>
+<body>
+  <a href="index.html" class="back">← меню</a>
+  <canvas id="canvas"></canvas>
+
+  <div class="controls">
+    <button id="playBtn">▶ Запустить музыку + анимацию</button>
+  </div>
+
+  <audio id="audio" src="white_tee.mp3" loop preload="auto"></audio>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const audio = document.getElementById('audio');
+    const playBtn = document.getElementById('playBtn');
+
+    let particles = [];
+    let isPlaying = false;
+    let lastBeat = 0;
+    let startTime = 0;
+    let scalePulse = 1;
+
+    const BPM = 150;
+    const BEAT_MS = 60000 / BPM;
+
+    // Яркая палитра
+    const colors = [
+      '#ff4d8d', '#ff6b9d', '#ff8fb8', '#ffb3d1',
+      '#ff3d7f', '#e91e8c', '#c2185b', '#ff5e9c',
+      '#ff79b0', '#ff9ecd', '#ff2d6f', '#ff70a6'
+    ];
+
+    function resize() {
+      canvas.width = Math.min(800, window.innerWidth);
+      canvas.height = Math.min(800, window.innerHeight);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Формула сердца
+    function heart(a, scale) {
+      const x = 16 * Math.pow(Math.sin(a), 3) * scale;
+      const y = (13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)) * scale;
+      return { x, y: -y };
+    }
+
+    // Создаём пачку точек
+    function spawnBurst(intensity = 1) {
+      const count = Math.floor(90 + Math.random() * 70) * intensity;
+
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sc = (0.8 + Math.random() * 15.5) * scalePulse;
+        const pos = heart(a, sc);
+
+        // Небольшой разброс
+        const spread = (Math.random() - 0.5) * 6;
+
+        particles.push({
+          x: pos.x + spread,
+          y: pos.y + spread,
+          size: 1.2 + Math.random() * 2.8,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          life: 1,
+          decay: 0.0035 + Math.random() * 0.005,
+          vx: (Math.random() - 0.5) * 0.4,
+          vy: (Math.random() - 0.5) * 0.4
+        });
+      }
+    }
+
+    function draw(timestamp) {
+      // Лёгкое затухание для эффекта шлейфа
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+
+      if (isPlaying) {
+        const elapsed = timestamp - startTime;
+
+        if (elapsed - lastBeat >= BEAT_MS) {
+          lastBeat = elapsed;
+          scalePulse = 1.15;
+          spawnBurst(1.0);
+
+          // Более сильный всплеск каждые 4 бита
+          if (Math.floor(elapsed / BEAT_MS) % 4 === 0) {
+            spawnBurst(1.5);
+            scalePulse = 1.28;
+          }
+        }
+
+        scalePulse += (1 - scalePulse) * 0.07;
+      }
+
+      // Рисуем точки
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+
+        p.life -= p.decay;
+        p.x += p.vx;
+        p.y += p.vy;
+
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+
+        const alpha = p.life;
+        const radius = p.size * (0.6 + p.life * 0.4);
+
+        // Основная точка
+        ctx.beginPath();
+        ctx.arc(cx + p.x, cy + p.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha;
+        ctx.fill();
+
+        // Мягкое свечение
+        ctx.beginPath();
+        ctx.arc(cx + p.x, cy + p.y, radius * 2.8, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha * 0.18;
+        ctx.fill();
+      }
+
+      ctx.globalAlpha = 1;
+
+      // Ограничение количества частиц
+      if (particles.length > 5000) {
+        particles.splice(0, particles.length - 5000);
+      }
+
+      requestAnimationFrame(draw);
+    }
+
+    playBtn.addEventListener('click', async () => {
+      if (!isPlaying) {
+        try {
+          await audio.play();
+          isPlaying = true;
+          startTime = performance.now();
+          lastBeat = 0;
+          particles = [];
+          spawnBurst(1.8); // стартовый всплеск
+          playBtn.textContent = '⏸ Пауза';
+        } catch (err) {
+          alert('Не удалось запустить аудио.\nПроверьте, что файл white_tee.mp3 лежит рядом с HTML.');
+        }
+      } else {
+        audio.pause();
+        isPlaying = false;
+        playBtn.textContent = '▶ Продолжить';
+      }
+    });
+
+    // Запускаем цикл отрисовки
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>
