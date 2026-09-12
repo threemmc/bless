@@ -43,8 +43,9 @@
     let particles = [];
     let isPlaying = false;
     let audioCtx, analyser, dataArray;
+    let explode = 0; // сила разлёта
 
-    const colors = ['#ff4d8d','#ff6b9d','#ff8fb8','#e91e8c','#ff5e9c','#ff79b0'];
+    const colors = ['#ff4d8d','#ff6b9d','#ff8fb8','#e91e8c','#ff5e9c'];
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -61,42 +62,42 @@
       return { x, y: -y };
     }
 
-    function spawn(intensity) {
+    function createParticle() {
       const base = Math.min(window.innerWidth, window.innerHeight) / 56;
-      const count = Math.floor(40 + intensity * 90);
+      const a = Math.random() * Math.PI * 2;
+      const sc = (0.6 + Math.random() * 11) * (base / 12);
+      const pos = heart(a, sc);
 
-      for (let i = 0; i < count; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const sc = (0.5 + Math.random() * 11) * (base / 12) * (0.7 + intensity * 0.5);
-        const pos = heart(a, sc);
+      return {
+        // целевая позиция (форма сердца)
+        tx: pos.x,
+        ty: pos.y,
+        // текущая позиция
+        x: pos.x,
+        y: pos.y,
+        size: 0.55 + Math.random() * 1.1,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        life: 1,
+        decay: 0.003 + Math.random() * 0.004,
+        // скорость разлёта
+        vx: 0,
+        vy: 0
+      };
+    }
 
-        particles.push({
-          x: pos.x + (Math.random()-0.5)*3,
-          y: pos.y + (Math.random()-0.5)*3,
-          size: 0.5 + Math.random() * 1.2 * intensity,
-          color: colors[Math.floor(Math.random()*colors.length)],
-          life: 1,
-          decay: 0.006 + Math.random()*0.008,
-          vx: (Math.random()-0.5) * 0.6 * intensity,
-          vy: (Math.random()-0.5) * 0.6 * intensity
-        });
+    // Создаём базовое количество частиц сердца
+    function initHeart() {
+      particles = [];
+      for (let i = 0; i < 900; i++) {
+        particles.push(createParticle());
       }
     }
 
-    function getLevels() {
+    function getBass() {
       analyser.getByteFrequencyData(dataArray);
-      let bass = 0, mid = 0, high = 0;
-      const len = dataArray.length;
-
-      for (let i = 0; i < 12; i++) bass += dataArray[i];
-      for (let i = 12; i < 40; i++) mid += dataArray[i];
-      for (let i = 40; i < 80; i++) high += dataArray[i];
-
-      bass = bass / 12 / 255;
-      mid  = mid  / 28 / 255;
-      high = high / 40 / 255;
-
-      return { bass, mid, high, energy: (bass*0.6 + mid*0.3 + high*0.1) };
+      let sum = 0;
+      for (let i = 0; i < 11; i++) sum += dataArray[i];
+      return sum / 11 / 255;
     }
 
     function draw() {
@@ -104,32 +105,45 @@
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
       const cx = window.innerWidth / 2;
-      const cy = window.innerHeight / 2 - 10;
+      const cy = window.innerHeight / 2 - 12;
 
       if (isPlaying && analyser) {
-        const { bass, energy } = getLevels();
+        const bass = getBass();
 
-        // Эквалайзерная логика
-        if (energy > 0.18) {
-          const intensity = Math.pow(energy, 1.4) * 2.8;
-          if (Math.random() < 0.55 + energy * 0.4) {
-            spawn(intensity);
-          }
+        // На сильный кик — включаем разлёт
+        if (bass > 0.46) {
+          explode = Math.min(1, explode + 0.18);
+        } else {
+          explode = Math.max(0, explode - 0.035); // плавно возвращаемся
         }
-        // Сильный бас = мощный выброс
-        if (bass > 0.45) {
-          spawn(1.8 + bass * 2.5);
+
+        // Иногда добавляем новые точки
+        if (bass > 0.33 && Math.random() < 0.3) {
+          particles.push(createParticle());
         }
       }
 
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
-        p.life -= p.decay;
+
+        if (explode > 0.05) {
+          // Разлёт во все стороны
+          const angle = Math.atan2(p.y, p.x) + (Math.random() - 0.5) * 0.8;
+          const force = explode * (3.5 + Math.random() * 4);
+          p.vx += Math.cos(angle) * force * 0.15;
+          p.vy += Math.sin(angle) * force * 0.15;
+        } else {
+          // Возврат к форме сердца
+          p.vx += (p.tx - p.x) * 0.045;
+          p.vy += (p.ty - p.y) * 0.045;
+        }
+
         p.x += p.vx;
         p.y += p.vy;
-        p.vx *= 0.96;
-        p.vy *= 0.96;
+        p.vx *= 0.92;
+        p.vy *= 0.92;
 
+        p.life -= p.decay;
         if (p.life <= 0) {
           particles.splice(i, 1);
           continue;
@@ -143,7 +157,7 @@
       }
       ctx.globalAlpha = 1;
 
-      if (particles.length > 4800) particles.splice(0, particles.length - 4800);
+      if (particles.length > 1600) particles.splice(0, particles.length - 1600);
       requestAnimationFrame(draw);
     }
 
@@ -153,7 +167,7 @@
       const source = audioCtx.createMediaElementSource(audio);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.35; // быстрая реакция
+      analyser.smoothingTimeConstant = 0.35;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
       source.connect(analyser);
       analyser.connect(audioCtx.destination);
@@ -166,7 +180,7 @@
           if (audioCtx.state === 'suspended') await audioCtx.resume();
           await audio.play();
           isPlaying = true;
-          particles = [];
+          initHeart();
           playBtn.textContent = '⏸ Пауза';
         } catch (e) {
           alert('Ошибка аудио');
