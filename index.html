@@ -19,79 +19,70 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      padding: 20px 16px;
     }
 
     h1 {
-      font-size: clamp(2.4rem, 7vw, 3.6rem);
+      font-size: 2.1rem;
       font-weight: 300;
-      letter-spacing: 0.18em;
-      margin-bottom: 0.35em;
+      letter-spacing: 0.2em;
+      margin-bottom: 0.3em;
       color: #ff8fb8;
     }
 
     .subtitle {
-      color: #777;
-      font-size: 0.95rem;
-      margin-bottom: 3.2rem;
-      letter-spacing: 0.06em;
+      color: #666;
+      font-size: 0.85rem;
+      margin-bottom: 2.2rem;
+      letter-spacing: 0.05em;
     }
 
     .options {
       display: flex;
-      gap: 1.6rem;
-      flex-wrap: wrap;
-      justify-content: center;
-      padding: 0 1.2rem;
+      flex-direction: column;
+      gap: 14px;
+      width: 100%;
+      max-width: 280px;
     }
 
     .card {
-      width: 240px;
-      height: 290px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 18px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      background: #000;
+      border: 1px solid #222;
+      border-radius: 14px;
+      padding: 28px 20px;
+      text-align: center;
       text-decoration: none;
       color: #fff;
-      transition: all 0.3s ease;
+      transition: border-color 0.2s;
     }
 
-    .card:hover {
-      border-color: rgba(255, 140, 180, 0.45);
-      background: rgba(255, 255, 255, 0.05);
-      transform: translateY(-6px);
+    .card:active {
+      border-color: #ff8fb8;
     }
 
     .icon {
-      font-size: 3.2rem;
-      margin-bottom: 1.1rem;
+      font-size: 2.4rem;
+      margin-bottom: 10px;
       color: #ff8fb8;
     }
 
     .card h2 {
-      font-size: 1.2rem;
+      font-size: 1.1rem;
       font-weight: 500;
-      margin-bottom: 0.5rem;
-      letter-spacing: 0.04em;
+      margin-bottom: 6px;
     }
 
     .card p {
-      font-size: 0.82rem;
-      color: #888;
-      text-align: center;
-      padding: 0 1.4rem;
-      line-height: 1.4;
+      font-size: 0.78rem;
+      color: #777;
+      line-height: 1.35;
     }
 
     footer {
       position: fixed;
-      bottom: 22px;
-      color: #444;
-      font-size: 0.78rem;
-      letter-spacing: 0.05em;
+      bottom: 18px;
+      color: #333;
+      font-size: 0.72rem;
     }
   </style>
 </head>
