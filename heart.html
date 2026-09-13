@@ -3,13 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
   <title>Heart</title>
+
   <style>
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
+
     html, body {
       width: 100%;
       height: 100%;
@@ -17,12 +20,14 @@
       overflow: hidden;
       touch-action: none;
     }
+
     canvas {
       display: block;
       width: 100%;
       height: 100%;
       background: #000;
     }
+
     .back {
       position: fixed;
       top: 14px;
@@ -32,6 +37,7 @@
       font-size: 14px;
       z-index: 10;
     }
+
     .controls {
       position: fixed;
       bottom: 24px;
@@ -39,6 +45,7 @@
       transform: translateX(-50%);
       z-index: 10;
     }
+
     button {
       background: #000;
       border: 1px solid #333;
@@ -50,35 +57,51 @@
     }
   </style>
 </head>
+
 <body>
+
 <a href="index.html" class="back">← меню</a>
+
 <canvas id="canvas"></canvas>
+
 <div class="controls">
   <button id="playBtn">▶ Запустить</button>
 </div>
+
 <audio
   id="audio"
   src="white_tee.mp3"
-  preload="auto"
-  crossorigin="anonymous">
+  preload="auto">
 </audio>
+
 <script>
+
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+
 const audio = document.getElementById('audio');
 const playBtn = document.getElementById('playBtn');
-/* =========================================
+
+
+/* =========================================================
    AUDIO
-========================================= */
+========================================================= */
+
 let audioCtx = null;
 let analyser = null;
 let dataArray = null;
+
 let isPlaying = false;
-/* =========================================
-   HEART
-========================================= */
+
+
+/* =========================================================
+   PARTICLES
+========================================================= */
+
 let particles = [];
-const PARTICLE_COUNT = 900;
+
+const PARTICLE_COUNT = 850;
+
 const colors = [
   '#ff4d8d',
   '#ff6b9d',
@@ -86,38 +109,62 @@ const colors = [
   '#e91e8c',
   '#ff5e9c'
 ];
-/* =========================================
-   BEAT STATE
-========================================= */
-let bass20_60 = 0;
-let kick60_120 = 0;
-let body120_200 = 0;
-let previousKick = 0;
+
+
+/* =========================================================
+   HEARTBEAT
+========================================================= */
+
 let beat = 0;
-let lastBeatTime = 0;
+
 /*
-   Насколько сильно сердце
-   расширяется на ударе.
+  Текущая сила баса.
 */
-let heartbeatScale = 1;
+let bassLevel = 0;
+
 /*
-   Небольшое движение частиц
-   от самого баса.
+  История энергии кика.
+  Она нужна, чтобы понимать:
+  "это реально новый удар?"
+  вместо:
+  "бас просто играет?"
 */
-let bassMotion = 0;
-/* =========================================
+let kickHistory = [];
+
+/*
+  Время последнего обнаруженного удара.
+*/
+let lastKickTime = 0;
+
+
+/*
+  Минимальное расстояние между
+  двумя ударами.
+
+  140 мс ≈ максимум около 7 ударов/сек,
+  чего для обычного кика более чем достаточно.
+*/
+const KICK_COOLDOWN = 140;
+
+
+/* =========================================================
    RESIZE
-========================================= */
+========================================================= */
+
 function resize() {
+
   const dpr =
     Math.min(
       window.devicePixelRatio || 1,
       2
     );
+
   canvas.width =
     window.innerWidth * dpr;
+
   canvas.height =
     window.innerHeight * dpr;
+
   ctx.setTransform(
     dpr,
     0,
@@ -127,19 +174,26 @@ function resize() {
     0
   );
 }
+
 resize();
+
 window.addEventListener(
   'resize',
   resize
 );
-/* =========================================
+
+
+/* =========================================================
    HEART EQUATION
-========================================= */
+========================================================= */
+
 function heart(a, scale) {
+
   const x =
     16 *
     Math.pow(Math.sin(a), 3) *
     scale;
+
   const y =
     (
       13 * Math.cos(a) -
@@ -147,44 +201,53 @@ function heart(a, scale) {
       2 * Math.cos(3 * a) -
       Math.cos(4 * a)
     ) * scale;
+
   return {
     x: x,
     y: -y
   };
 }
-/* =========================================
+
+
+/* =========================================================
    CREATE PARTICLE
-========================================= */
+========================================================= */
+
 function createParticle() {
+
   const base =
     Math.min(
       window.innerWidth,
       window.innerHeight
     ) / 55;
+
   const a =
     Math.random() *
     Math.PI *
     2;
-  /*
-     Большинство частиц ближе
-     к основной линии сердца.
-  */
+
   const sc =
     (
-      0.65 +
-      Math.random() * 10.45
+      0.6 +
+      Math.random() * 10.5
     ) *
     (base / 12);
+
   const pos =
     heart(a, sc);
+
   return {
+
     tx: pos.x,
     ty: pos.y,
+
     x: pos.x,
     y: pos.y,
+
     size:
       0.55 +
-      Math.random() * 1.15,
+      Math.random() * 1.1,
+
     color:
       colors[
         Math.floor(
@@ -192,442 +255,764 @@ function createParticle() {
           colors.length
         )
       ],
+
     life: 1,
+
     decay:
-      0.0018 +
-      Math.random() * 0.0025,
+      0.002 +
+      Math.random() * 0.0028,
+
     vx: 0,
     vy: 0
   };
 }
-/* =========================================
-   INITIALIZE HEART
-========================================= */
+
+
+/* =========================================================
+   INIT HEART
+========================================================= */
+
 function initHeart() {
+
   particles = [];
+
   for (
     let i = 0;
     i < PARTICLE_COUNT;
     i++
   ) {
+
     particles.push(
       createParticle()
     );
   }
 }
-/* =========================================
-   FREQUENCY RANGE
-========================================= */
-function getRange(minHz, maxHz) {
-  if (!analyser) {
-    return 0;
-  }
-  const nyquist =
-    audioCtx.sampleRate / 2;
-  const minBin =
-    Math.max(
-      0,
-      Math.floor(
-        minHz /
-        nyquist *
-        dataArray.length
-      )
-    );
-  const maxBin =
-    Math.min(
-      dataArray.length - 1,
-      Math.ceil(
-        maxHz /
-        nyquist *
-        dataArray.length
-      )
-    );
-  let sum = 0;
-  let count = 0;
-  for (
-    let i = minBin;
-    i <= maxBin;
-    i++
-  ) {
-    sum += dataArray[i];
-    count++;
-  }
-  if (count === 0) {
-    return 0;
-  }
-  return sum / count / 255;
-}
-/* =========================================
-   AUDIO ANALYSIS
-========================================= */
-function analyzeAudio() {
+
+
+/* =========================================================
+   FREQUENCY ANALYSIS
+========================================================= */
+
+function getBands() {
+
   analyser.getByteFrequencyData(
     dataArray
   );
-  /*
-     20–60 Hz
-     Саббас.
-  */
-  const sub =
-    getRange(20, 60);
-  /*
-     60–120 Hz
-     Главная зона кика.
-  */
-  const kick =
-    getRange(60, 120);
-  /*
-     120–200 Hz
-     Тело кика.
-  */
-  const body =
-    getRange(120, 200);
-  /*
-     Основная энергия удара.
-     60–120 Hz имеет самый
-     большой вес.
-  */
-  const kickEnergy =
-      kick * 0.65 +
-      sub * 0.20 +
-      body * 0.15;
-  /*
-     Сглаженная энергия.
-     Это нужно, чтобы сердце
-     не дёргалось от каждого
-     маленького FFT-скачка.
-  */
-  const smoothedKick =
-    kickEnergy * 0.55 +
-    previousKick * 0.45;
-  /*
-     Нас интересует именно
-     РОСТ энергии.
-     Постоянный бас не должен
-     бесконечно считаться киком.
-  */
-  const attack =
-    smoothedKick -
-    previousKick;
-  const now =
-    performance.now();
-  /*
-     Детектор удара.
-     120 мс — минимальное
-     расстояние между ударами.
-  */
-  const isBeat =
-    smoothedKick > 0.18 &&
-    attack > 0.018 &&
-    now - lastBeatTime > 120;
-  if (isBeat) {
-    /*
-       Новый настоящий удар.
-    */
-    beat = 1;
-    lastBeatTime = now;
+
+  const binHz =
+    audioCtx.sampleRate /
+    analyser.fftSize;
+
+
+  function getAverage(minHz, maxHz) {
+
+    const start =
+      Math.max(
+        0,
+        Math.floor(
+          minHz / binHz
+        )
+      );
+
+    const end =
+      Math.min(
+        dataArray.length,
+        Math.ceil(
+          maxHz / binHz
+        )
+      );
+
+    let sum = 0;
+
+    for (
+      let i = start;
+      i < end;
+      i++
+    ) {
+
+      sum += dataArray[i];
+    }
+
+    return (
+      sum /
+      Math.max(
+        1,
+        end - start
+      ) /
+      255
+    );
   }
+
+
   /*
-     Быстрое затухание удара.
-     Получается:
-     ТУК
-      ↓
-     быстрое возвращение
-      ↓
-     ТУК
+    Отдельные диапазоны.
+
+    20–60:
+    саббас
+
+    60–120:
+    основной кик
+
+    120–200:
+    тело кика
+
+    200–2000:
+    середина
+
+    2000–8000:
+    верх
   */
-  beat *= 0.82;
-  /*
-     Общий бас.
-     Используется гораздо
-     мягче, чем кик.
-  */
-  bassMotion =
-    bassMotion * 0.88 +
-    (
-      sub * 0.55 +
-      kick * 0.45
-    ) * 0.12;
-  previousKick =
-    smoothedKick;
+
+  const sub =
+    getAverage(20, 60);
+
+  const kick =
+    getAverage(60, 120);
+
+  const kickBody =
+    getAverage(120, 200);
+
+  const mid =
+    getAverage(200, 2000);
+
+  const high =
+    getAverage(2000, 8000);
+
+
   return {
     sub,
     kick,
-    body,
-    energy: smoothedKick
+    kickBody,
+    mid,
+    high
   };
 }
-/* =========================================
+
+
+/* =========================================================
+   KICK DETECTOR
+========================================================= */
+
+function detectKick(bands) {
+
+  /*
+    Формируем энергию именно
+    низкого удара.
+
+    Главный вес:
+    60–120 Hz.
+
+    Саб и тело используются
+    как дополнительные признаки.
+  */
+
+  const energy =
+      bands.kick * 0.65 +
+      bands.sub * 0.20 +
+      bands.kickBody * 0.15;
+
+
+  /*
+    Добавляем новое значение
+    в историю.
+  */
+
+  kickHistory.push(
+    energy
+  );
+
+
+  /*
+    История примерно последних
+    200–250 мс.
+
+    При 60 FPS это около 15 кадров.
+  */
+
+  if (
+    kickHistory.length > 15
+  ) {
+
+    kickHistory.shift();
+  }
+
+
+  /*
+    Если истории пока мало,
+    не пытаемся определить удар.
+  */
+
+  if (
+    kickHistory.length < 8
+  ) {
+
+    return false;
+  }
+
+
+  /*
+    Находим средний уровень
+    недавнего баса.
+
+    Это наш "обычный уровень".
+  */
+
+  let sum = 0;
+
+  for (
+    let i = 0;
+    i < kickHistory.length - 1;
+    i++
+  ) {
+
+    sum += kickHistory[i];
+  }
+
+  const average =
+    sum /
+    (kickHistory.length - 1);
+
+
+  /*
+    Нас интересует насколько
+    текущая энергия выше
+    обычной.
+  */
+
+  const rise =
+    energy - average;
+
+
+  /*
+    Дополнительная проверка:
+
+    кик должен быть достаточно
+    громким сам по себе.
+  */
+
+  const loudEnough =
+    energy > 0.16;
+
+
+  /*
+    И он должен заметно вырасти
+    относительно недавнего уровня.
+  */
+
+  const strongAttack =
+    rise > 0.035;
+
+
+  /*
+    Не разрешаем несколько ударов
+    подряд от одного и того же
+    длинного басового сигнала.
+  */
+
+  const now =
+    performance.now();
+
+  const cooldownPassed =
+    now - lastKickTime >
+    KICK_COOLDOWN;
+
+
+  /*
+    Финальное решение.
+  */
+
+  if (
+    loudEnough &&
+    strongAttack &&
+    cooldownPassed
+  ) {
+
+    lastKickTime = now;
+
+    return true;
+  }
+
+
+  return false;
+}
+
+
+/* =========================================================
+   AUDIO UPDATE
+========================================================= */
+
+function updateAudio() {
+
+  const bands =
+    getBands();
+
+
+  /*
+    Определяем новый удар.
+  */
+
+  const isKick =
+    detectKick(bands);
+
+
+  if (isKick) {
+
+    /*
+      Настоящий новый удар.
+
+      Не постоянный бас,
+      а именно атака.
+    */
+
+    beat = 1;
+  }
+
+
+  /*
+    Удар быстро затухает.
+
+    1
+    ↓
+    0.84
+    ↓
+    0.70
+    ↓
+    0.59
+    ↓
+    ...
+  */
+
+  beat *= 0.84;
+
+
+  /*
+    Бас влияет на сердце
+    намного слабее.
+
+    Поэтому постоянный бас
+    не превращается в
+    постоянное сердцебиение.
+  */
+
+  bassLevel =
+    bassLevel * 0.88 +
+    (
+      bands.sub * 0.55 +
+      bands.kick * 0.45
+    ) * 0.12;
+
+
+  return bands;
+}
+
+
+/* =========================================================
    DRAW HEART
-========================================= */
-function drawHeart(audioData) {
+========================================================= */
+
+function drawHeart() {
+
   const cx =
     window.innerWidth / 2;
+
   const cy =
     window.innerHeight / 2 - 10;
+
+
   /*
-     Базовый размер.
-     В обычном состоянии:
-     1.0
+    Базовый размер сердца.
   */
-  heartbeatScale = 1;
-  if (audioData) {
-    /*
-       Саб + постоянный бас
-       дают очень небольшой
-       живой пульс.
-    */
-    heartbeatScale +=
-      bassMotion * 0.07;
-    /*
-       Сам удар.
-       Сердце расширяется
-       заметно, но не взрывается.
-    */
-    heartbeatScale +=
-      beat * 0.17;
-  }
+
+  let scale =
+    1;
+
+
+  /*
+    Постоянный бас:
+    очень маленькое изменение.
+  */
+
+  scale +=
+    bassLevel * 0.055;
+
+
+  /*
+    Настоящий кик:
+    заметный удар.
+
+    Сердце увеличивается,
+    но не разлетается.
+  */
+
+  scale +=
+    beat * 0.18;
+
+
   for (
     let i = particles.length - 1;
     i >= 0;
     i--
   ) {
+
     const p =
       particles[i];
+
+
     /*
-       Целевая позиция.
-       ВАЖНО:
-       мы не разбрасываем частицы
-       далеко от сердца.
-       Поэтому форма сердца
-       сохраняется.
+      Новая целевая позиция.
     */
+
     const targetX =
-      p.tx *
-      heartbeatScale;
+      p.tx * scale;
+
     const targetY =
-      p.ty *
-      heartbeatScale;
+      p.ty * scale;
+
+
     /*
-       Плавное притягивание
-       к новой форме.
+      Плавное движение
+      к форме сердца.
     */
+
     p.vx +=
-      (targetX - p.x) *
-      0.085;
+      (
+        targetX -
+        p.x
+      ) * 0.075;
+
     p.vy +=
-      (targetY - p.y) *
-      0.085;
+      (
+        targetY -
+        p.y
+      ) * 0.075;
+
+
     /*
-       На самом ударе добавляем
-       очень маленький импульс
-       наружу.
-       Это создаёт ощущение
-       живого "тук".
+      Маленький импульс
+      наружу непосредственно
+      во время удара.
+
+      Он очень слабый специально:
+      сердце должно "биться",
+      а не взрываться.
     */
-    if (beat > 0.45) {
+
+    if (
+      beat > 0.45
+    ) {
+
       const distance =
         Math.sqrt(
           p.x * p.x +
           p.y * p.y
         ) || 1;
+
       const nx =
         p.x / distance;
+
       const ny =
         p.y / distance;
+
+
       const impulse =
-        beat *
-        0.55;
+        beat * 0.20;
+
+
       p.vx +=
         nx * impulse;
+
       p.vy +=
         ny * impulse;
     }
+
+
     /*
-       Движение.
+      Движение.
     */
+
     p.x += p.vx;
     p.y += p.vy;
+
+
     /*
-       Сопротивление.
-       Частицы быстро успокаиваются.
+      Сопротивление.
     */
-    p.vx *= 0.82;
-    p.vy *= 0.82;
+
+    p.vx *= 0.84;
+    p.vy *= 0.84;
+
+
     /*
-       Жизнь частицы.
+      Жизнь.
     */
+
     p.life -=
       p.decay;
-    if (p.life <= 0) {
+
+
+    if (
+      p.life <= 0
+    ) {
+
       particles.splice(
         i,
         1
       );
+
       continue;
     }
+
+
     /*
-       Размер частиц тоже
-       немного реагирует
-       на удар.
+      Размер частицы.
+
+      На ударе чуть увеличивается.
     */
-    const particleSize =
+
+    const size =
       p.size *
       Math.max(
         p.life,
-        0.35
+        0.3
       ) *
       (
         1 +
-        beat * 0.20
+        beat * 0.15
       );
+
+
     ctx.beginPath();
+
     ctx.arc(
       cx + p.x,
       cy + p.y,
-      particleSize,
+      size,
       0,
       Math.PI * 2
     );
+
+
     ctx.fillStyle =
       p.color;
+
     ctx.globalAlpha =
-      p.life * 0.9;
+      p.life * 0.92;
+
     ctx.fill();
   }
+
+
   ctx.globalAlpha = 1;
+
+
   /*
-     Если частицы закончились,
-     восполняем их.
+    Поддерживаем количество
+    частиц постоянным.
   */
+
   while (
     particles.length <
     PARTICLE_COUNT
   ) {
+
     particles.push(
       createParticle()
     );
   }
 }
-/* =========================================
-   MAIN DRAW LOOP
-========================================= */
+
+
+/* =========================================================
+   MAIN LOOP
+========================================================= */
+
 function draw() {
+
   ctx.fillStyle =
     '#000';
+
   ctx.fillRect(
     0,
     0,
     window.innerWidth,
     window.innerHeight
   );
-  let audioData = null;
+
+
   if (
     isPlaying &&
     analyser
   ) {
-    audioData =
-      analyzeAudio();
+
+    updateAudio();
+  } else {
+
+    /*
+      Если музыка остановлена,
+      никаких старых импульсов.
+    */
+
+    beat *= 0.82;
+    bassLevel *= 0.92;
   }
-  drawHeart(
-    audioData
-  );
+
+
+  drawHeart();
+
+
   requestAnimationFrame(
     draw
   );
 }
-/* =========================================
+
+
+/* =========================================================
    AUDIO INITIALIZATION
-========================================= */
+========================================================= */
+
 async function initAudio() {
+
   if (audioCtx) {
     return;
   }
+
+
   audioCtx =
     new (
       window.AudioContext ||
       window.webkitAudioContext
     )();
+
+
   const source =
     audioCtx.createMediaElementSource(
       audio
     );
+
+
   analyser =
     audioCtx.createAnalyser();
+
+
   /*
-     2048 даёт достаточно
-     хорошее разрешение для
-     диапазона 20–200 Hz.
+    2048 достаточно хорошо
+    разделяет низкие частоты.
   */
+
   analyser.fftSize =
     2048;
+
+
   /*
-     Маленькое сглаживание.
-     Нам нужны быстрые атаки
-     кика.
+    Маленькое сглаживание.
+
+    Нам нужна быстрая атака кика.
   */
+
   analyser.smoothingTimeConstant =
-    0.12;
+    0.08;
+
+
   dataArray =
     new Uint8Array(
       analyser.frequencyBinCount
     );
+
+
   source.connect(
     analyser
   );
+
   analyser.connect(
     audioCtx.destination
   );
 }
-/* =========================================
-   PLAY / PAUSE
-========================================= */
+
+
+/* =========================================================
+   PLAY BUTTON
+========================================================= */
+
 playBtn.addEventListener(
   'click',
   async () => {
+
     if (!isPlaying) {
+
       try {
+
         await initAudio();
+
+
         if (
           audioCtx.state ===
           'suspended'
         ) {
+
           await audioCtx.resume();
         }
+
+
         await audio.play();
+
+
         isPlaying = true;
+
+
         /*
-           Сбрасываем состояние.
+          Сбрасываем детектор.
         */
-        previousKick = 0;
+
+        kickHistory = [];
+
         beat = 0;
-        bassMotion = 0;
-        heartbeatScale = 1;
-        lastBeatTime = 0;
+
+        bassLevel = 0;
+
+        lastKickTime = 0;
+
+
         initHeart();
+
+
         playBtn.textContent =
           '⏸ Пауза';
+
       } catch (error) {
-        console.error(error);
+
+        console.error(
+          error
+        );
+
         alert(
           'Ошибка аудио'
         );
       }
+
     } else {
+
       audio.pause();
+
       isPlaying = false;
+
       playBtn.textContent =
         '▶ Запустить';
     }
   }
 );
-/* =========================================
+
+
+/* =========================================================
    START
-========================================= */
+========================================================= */
+
 initHeart();
+
 requestAnimationFrame(
   draw
 );
+
 </script>
+
 </body>
 </html>
