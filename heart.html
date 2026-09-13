@@ -7,8 +7,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
       background: #000000;
       overflow: hidden;
       touch-action: none;
@@ -21,8 +20,7 @@
     }
     .back {
       position: fixed;
-      top: 14px;
-      left: 14px;
+      top: 14px; left: 14px;
       color: #555;
       text-decoration: none;
       font-size: 14px;
@@ -65,9 +63,10 @@
     let particles = [];
     let isPlaying = false;
     let audioCtx, analyser, dataArray;
-    let lastBass = 0;
+    let explode = 0;
+    let prevLow = 0;
 
-    const colors = ['#ff4d8d', '#ff6b9d', '#ff8fb8', '#e91e8c', '#ff5e9c', '#ff79b0'];
+    const colors = ['#ff4d8d', '#ff6b9d', '#ff8fb8', '#e91e8c', '#ff5e9c'];
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -84,40 +83,48 @@
       return { x, y: -y };
     }
 
-    function spawnBurst(intensity = 1) {
-      const baseScale = Math.min(window.innerWidth, window.innerHeight) / 58;
-      const count = Math.floor(70 * intensity + Math.random() * 40 * intensity);
+    function createParticle(scaleMult = 1) {
+      const base = Math.min(window.innerWidth, window.innerHeight) / 56;
+      const a = Math.random() * Math.PI * 2;
+      const sc = (0.55 + Math.random() * 11) * (base / 12) * scaleMult;
+      const pos = heart(a, sc);
 
-      for (let i = 0; i < count; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const sc = (0.55 + Math.random() * 11) * (baseScale / 12);
-        const pos = heart(a, sc);
-        const spread = (Math.random() - 0.5) * 2.8;
+      return {
+        tx: pos.x,
+        ty: pos.y,
+        x: pos.x,
+        y: pos.y,
+        size: 0.5 + Math.random() * 1.15,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        life: 1,
+        decay: 0.0028 + Math.random() * 0.004,
+        vx: 0,
+        vy: 0
+      };
+    }
 
-        particles.push({
-          x: pos.x + spread,
-          y: pos.y + spread,
-          size: 0.5 + Math.random() * 1.05,
-          color: colors[Math.floor(Math.random() * colors.length)],
-          life: 1,
-          decay: 0.0048 + Math.random() * 0.006,
-          vx: (Math.random() - 0.5) * 0.35 * intensity,
-          vy: (Math.random() - 0.5) * 0.35 * intensity
-        });
+    function initHeart() {
+      particles = [];
+      for (let i = 0; i < 850; i++) {
+        particles.push(createParticle());
       }
     }
 
-    function getBassEnergy() {
-      if (!analyser) return 0;
+    function getBands() {
       analyser.getByteFrequencyData(dataArray);
 
-      // Берём только самые низкие частоты (бас / кик)
-      let sum = 0;
-      const bassBins = 8; // низкие частоты
-      for (let i = 0; i < bassBins; i++) {
-        sum += dataArray[i];
-      }
-      return sum / bassBins / 255; // от 0 до 1
+      let low = 0, mid = 0, high = 0;
+
+      for (let i = 0; i < 12; i++) low += dataArray[i];
+      low = low / 12 / 255;
+
+      for (let i = 12; i < 45; i++) mid += dataArray[i];
+      mid = mid / 33 / 255;
+
+      for (let i = 45; i < 90; i++) high += dataArray[i];
+      high = high / 45 / 255;
+
+      return { low, mid, high };
     }
 
     function draw() {
@@ -125,34 +132,54 @@
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
       const cx = window.innerWidth / 2;
-      const cy = window.innerHeight / 2 - 15;
+      const cy = window.innerHeight / 2 - 12;
 
       if (isPlaying && analyser) {
-        const bass = getBassEnergy();
+        const { low, mid, high } = getBands();
+        const delta = low - prevLow;
 
-        // Реагируем на резкий рост баса (удар)
-        if (bass > 0.42 && bass - lastBass > 0.08) {
-          // Сильный удар баса → большой выброс
-          const intensity = 1.2 + bass * 2.2;
-          spawnBurst(intensity);
-        } 
-        // Средний уровень баса → небольшие точки
-        else if (bass > 0.28 && Math.random() < 0.35) {
-          spawnBurst(0.45 + bass);
+        // Взрыв только на резкий рост баса (настоящий кик)
+        if (low > 0.48 && delta > 0.12) {
+          explode = Math.min(1, explode + 0.35);
+        } else {
+          explode = Math.max(0, explode - 0.028);
+        }
+        prevLow = low;
+
+        // Средние частоты — добавляем точки
+        if (mid > 0.32 && Math.random() < 0.3) {
+          particles.push(createParticle(0.9 + mid * 0.4));
         }
 
-        lastBass = bass;
+        // Высокие частоты — мелкие точки
+        if (high > 0.28 && Math.random() < 0.22) {
+          const p = createParticle(0.7);
+          p.size *= 0.7;
+          particles.push(p);
+        }
       }
 
-      // Рисуем частицы
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
-        p.life -= p.decay;
+
+        if (explode > 0.06) {
+          // Разлёт во все стороны
+          const angle = Math.atan2(p.y, p.x) + (Math.random() - 0.5) * 0.9;
+          const force = explode * (4 + Math.random() * 5);
+          p.vx += Math.cos(angle) * force * 0.14;
+          p.vy += Math.sin(angle) * force * 0.14;
+        } else {
+          // Возврат к форме сердца
+          p.vx += (p.tx - p.x) * 0.04;
+          p.vy += (p.ty - p.y) * 0.04;
+        }
+
         p.x += p.vx;
         p.y += p.vy;
-        p.vx *= 0.98;
-        p.vy *= 0.98;
+        p.vx *= 0.91;
+        p.vy *= 0.91;
 
+        p.life -= p.decay;
         if (p.life <= 0) {
           particles.splice(i, 1);
           continue;
@@ -166,20 +193,18 @@
       }
       ctx.globalAlpha = 1;
 
-      if (particles.length > 4200) {
-        particles.splice(0, particles.length - 4200);
-      }
-
+      if (particles.length > 1700) particles.splice(0, particles.length - 1700);
       requestAnimationFrame(draw);
     }
 
     async function initAudio() {
       if (audioCtx) return;
-
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaElementSource(audio);
+
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.4;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       source.connect(analyser);
@@ -190,16 +215,15 @@
       if (!isPlaying) {
         try {
           await initAudio();
-          if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-          }
+          if (audioCtx.state === 'suspended') await audioCtx.resume();
           await audio.play();
           isPlaying = true;
-          particles = [];
+          explode = 0;
+          prevLow = 0;
+          initHeart();
           playBtn.textContent = '⏸ Пауза';
         } catch (e) {
-          alert('Не удалось запустить аудио');
-          console.error(e);
+          alert('Ошибка аудио');
         }
       } else {
         audio.pause();
