@@ -2,7 +2,10 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+  >
 
   <title>Heart</title>
 
@@ -13,7 +16,8 @@
       box-sizing: border-box;
     }
 
-    html, body {
+    html,
+    body {
       width: 100%;
       height: 100%;
       background: #000;
@@ -54,6 +58,11 @@
       border-radius: 10px;
       font-size: 14px;
       min-width: 170px;
+      cursor: pointer;
+    }
+
+    button:active {
+      transform: scale(0.97);
     }
   </style>
 </head>
@@ -74,22 +83,43 @@
   preload="auto">
 </audio>
 
+
 <script>
 
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+/* =========================================================
+   WEBGL
+========================================================= */
 
-const audio = document.getElementById('audio');
-const playBtn = document.getElementById('playBtn');
+const canvas =
+  document.getElementById('canvas');
+
+const gl =
+  canvas.getContext('webgl', {
+    alpha: false,
+    antialias: false,
+    powerPreference: 'high-performance'
+  });
+
+if (!gl) {
+  alert('WebGL не поддерживается этим браузером.');
+  throw new Error('WebGL unavailable');
+}
 
 
 /* =========================================================
    AUDIO
 ========================================================= */
 
+const audio =
+  document.getElementById('audio');
+
+const playBtn =
+  document.getElementById('playBtn');
+
 let audioCtx = null;
 let analyser = null;
 let dataArray = null;
+let previousSpectrum = null;
 
 let isPlaying = false;
 
@@ -98,58 +128,454 @@ let isPlaying = false;
    PARTICLES
 ========================================================= */
 
-let particles = [];
+const PARTICLE_COUNT = 4000;
 
-const PARTICLE_COUNT = 850;
+const positions =
+  new Float32Array(PARTICLE_COUNT * 2);
 
-const colors = [
-  '#ff4d8d',
-  '#ff6b9d',
-  '#ff8fb8',
-  '#e91e8c',
-  '#ff5e9c'
-];
+const velocities =
+  new Float32Array(PARTICLE_COUNT * 2);
+
+const targets =
+  new Float32Array(PARTICLE_COUNT * 2);
+
+const sizes =
+  new Float32Array(PARTICLE_COUNT);
+
+const randoms =
+  new Float32Array(PARTICLE_COUNT);
+
+const particleAlpha =
+  new Float32Array(PARTICLE_COUNT);
+
+const particlePhase =
+  new Float32Array(PARTICLE_COUNT);
 
 
 /* =========================================================
-   HEARTBEAT
+   HEART STATE
 ========================================================= */
 
 let beat = 0;
+let heartScale = 1;
 
-/*
-  Текущая сила баса.
-*/
-let bassLevel = 0;
-
-/*
-  История энергии кика.
-  Она нужна, чтобы понимать:
-  "это реально новый удар?"
-  вместо:
-  "бас просто играет?"
-*/
 let kickHistory = [];
+let fluxHistory = [];
 
-/*
-  Время последнего обнаруженного удара.
-*/
 let lastKickTime = 0;
 
-
-/*
-  Минимальное расстояние между
-  двумя ударами.
-
-  140 мс ≈ максимум около 7 ударов/сек,
-  чего для обычного кика более чем достаточно.
-*/
 const KICK_COOLDOWN = 140;
+
+
+/* =========================================================
+   SHADERS
+========================================================= */
+
+const vertexShaderSource = `
+
+attribute vec2 a_position;
+attribute float a_size;
+attribute float a_alpha;
+attribute float a_random;
+
+uniform vec2 u_resolution;
+uniform float u_scale;
+uniform float u_beat;
+uniform float u_time;
+
+varying float v_alpha;
+varying float v_random;
+
+void main() {
+
+    vec2 position = a_position;
+
+    /*
+      Очень маленькое живое движение.
+      Оно НЕ зависит от баса.
+      Оно только слегка оживляет частицы.
+    */
+
+    float wave =
+        sin(
+            u_time * 1.4 +
+            a_random * 20.0
+        ) * 0.12;
+
+    position +=
+        normalize(position + vec2(0.0001)) *
+        wave *
+        (0.2 + u_beat * 0.4);
+
+    position *= u_scale;
+
+    vec2 zeroToOne =
+        position / u_resolution;
+
+    vec2 zeroToTwo =
+        zeroToOne * 2.0;
+
+    vec2 clipSpace =
+        zeroToTwo - 1.0;
+
+    clipSpace.y *= -1.0;
+
+    gl_Position =
+        vec4(clipSpace, 0.0, 1.0);
+
+    gl_PointSize =
+        a_size *
+        (
+          1.0 +
+          u_beat * 0.16
+        );
+
+    v_alpha =
+        a_alpha *
+        (
+          0.78 +
+          u_beat * 0.22
+        );
+
+    v_random =
+        a_random;
+}
+`;
+
+
+const fragmentShaderSource = `
+
+precision mediump float;
+
+varying float v_alpha;
+varying float v_random;
+
+void main() {
+
+    vec2 uv =
+        gl_PointCoord -
+        vec2(0.5);
+
+    float dist =
+        length(uv);
+
+    float alpha =
+        smoothstep(
+            0.5,
+            0.05,
+            dist
+        );
+
+    vec3 color =
+        mix(
+            vec3(1.0, 0.20, 0.48),
+            vec3(1.0, 0.55, 0.72),
+            v_random
+        );
+
+    gl_FragColor =
+        vec4(
+            color,
+            alpha * v_alpha
+        );
+}
+`;
+
+
+/* =========================================================
+   SHADER HELPERS
+========================================================= */
+
+function createShader(
+  type,
+  source
+) {
+
+  const shader =
+    gl.createShader(type);
+
+  gl.shaderSource(
+    shader,
+    source
+  );
+
+  gl.compileShader(
+    shader
+  );
+
+  if (
+    !gl.getShaderParameter(
+      shader,
+      gl.COMPILE_STATUS
+    )
+  ) {
+
+    console.error(
+      gl.getShaderInfoLog(shader)
+    );
+
+    throw new Error(
+      'Shader compilation error'
+    );
+  }
+
+  return shader;
+}
+
+
+function createProgram(
+  vertexSource,
+  fragmentSource
+) {
+
+  const vertexShader =
+    createShader(
+      gl.VERTEX_SHADER,
+      vertexSource
+    );
+
+  const fragmentShader =
+    createShader(
+      gl.FRAGMENT_SHADER,
+      fragmentSource
+    );
+
+  const program =
+    gl.createProgram();
+
+  gl.attachShader(
+    program,
+    vertexShader
+  );
+
+  gl.attachShader(
+    program,
+    fragmentShader
+  );
+
+  gl.linkProgram(
+    program
+  );
+
+  if (
+    !gl.getProgramParameter(
+      program,
+      gl.LINK_STATUS
+    )
+  ) {
+
+    console.error(
+      gl.getProgramInfoLog(program)
+    );
+
+    throw new Error(
+      'Program linking error'
+    );
+  }
+
+  return program;
+}
+
+
+const program =
+  createProgram(
+    vertexShaderSource,
+    fragmentShaderSource
+  );
+
+gl.useProgram(program);
+
+
+/* =========================================================
+   ATTRIBUTES / UNIFORMS
+========================================================= */
+
+const positionLocation =
+  gl.getAttribLocation(
+    program,
+    'a_position'
+  );
+
+const sizeLocation =
+  gl.getAttribLocation(
+    program,
+    'a_size'
+  );
+
+const alphaLocation =
+  gl.getAttribLocation(
+    program,
+    'a_alpha'
+  );
+
+const randomLocation =
+  gl.getAttribLocation(
+    program,
+    'a_random'
+  );
+
+
+const resolutionLocation =
+  gl.getUniformLocation(
+    program,
+    'u_resolution'
+  );
+
+const scaleLocation =
+  gl.getUniformLocation(
+    program,
+    'u_scale'
+  );
+
+const beatLocation =
+  gl.getUniformLocation(
+    program,
+    'u_beat'
+  );
+
+const timeLocation =
+  gl.getUniformLocation(
+    program,
+    'u_time'
+  );
+
+
+/* =========================================================
+   GPU BUFFERS
+========================================================= */
+
+const positionBuffer =
+  gl.createBuffer();
+
+const sizeBuffer =
+  gl.createBuffer();
+
+const alphaBuffer =
+  gl.createBuffer();
+
+const randomBuffer =
+  gl.createBuffer();
+
+
+gl.bindBuffer(
+  gl.ARRAY_BUFFER,
+  positionBuffer
+);
+
+gl.bufferData(
+  gl.ARRAY_BUFFER,
+  positions,
+  gl.DYNAMIC_DRAW
+);
+
+gl.enableVertexAttribArray(
+  positionLocation
+);
+
+gl.vertexAttribPointer(
+  positionLocation,
+  2,
+  gl.FLOAT,
+  false,
+  0,
+  0
+);
+
+
+gl.bindBuffer(
+  gl.ARRAY_BUFFER,
+  sizeBuffer
+);
+
+gl.bufferData(
+  gl.ARRAY_BUFFER,
+  sizes,
+  gl.STATIC_DRAW
+);
+
+gl.enableVertexAttribArray(
+  sizeLocation
+);
+
+gl.vertexAttribPointer(
+  sizeLocation,
+  1,
+  gl.FLOAT,
+  false,
+  0,
+  0
+);
+
+
+gl.bindBuffer(
+  gl.ARRAY_BUFFER,
+  alphaBuffer
+);
+
+gl.bufferData(
+  gl.ARRAY_BUFFER,
+  particleAlpha,
+  gl.STATIC_DRAW
+);
+
+gl.enableVertexAttribArray(
+  alphaLocation
+);
+
+gl.vertexAttribPointer(
+  alphaLocation,
+  1,
+  gl.FLOAT,
+  false,
+  0,
+  0
+);
+
+
+gl.bindBuffer(
+  gl.ARRAY_BUFFER,
+  randomBuffer
+);
+
+gl.bufferData(
+  gl.ARRAY_BUFFER,
+  randoms,
+  gl.STATIC_DRAW
+);
+
+gl.enableVertexAttribArray(
+  randomLocation
+);
+
+gl.vertexAttribPointer(
+  randomLocation,
+  1,
+  gl.FLOAT,
+  false,
+  0,
+  0
+);
+
+
+/* =========================================================
+   BLENDING
+========================================================= */
+
+gl.enable(
+  gl.BLEND
+);
+
+gl.blendFunc(
+  gl.SRC_ALPHA,
+  gl.ONE);
 
 
 /* =========================================================
    RESIZE
 ========================================================= */
+
+let screenWidth = 0;
+let screenHeight = 0;
 
 function resize() {
 
@@ -159,23 +585,33 @@ function resize() {
       2
     );
 
+  screenWidth =
+    window.innerWidth;
+
+  screenHeight =
+    window.innerHeight;
+
   canvas.width =
-    window.innerWidth * dpr;
+    screenWidth * dpr;
 
   canvas.height =
-    window.innerHeight * dpr;
+    screenHeight * dpr;
 
-  ctx.setTransform(
-    dpr,
+  gl.viewport(
     0,
     0,
-    dpr,
-    0,
-    0
+    canvas.width,
+    canvas.height
   );
-}
 
-resize();
+  gl.uniform2f(
+    resolutionLocation,
+    canvas.width,
+    canvas.height
+  );
+
+  initHeart();
+}
 
 window.addEventListener(
   'resize',
@@ -187,11 +623,17 @@ window.addEventListener(
    HEART EQUATION
 ========================================================= */
 
-function heart(a, scale) {
+function heart(
+  a,
+  scale
+) {
 
   const x =
     16 *
-    Math.pow(Math.sin(a), 3) *
+    Math.pow(
+      Math.sin(a),
+      3
+    ) *
     scale;
 
   const y =
@@ -200,81 +642,28 @@ function heart(a, scale) {
       5 * Math.cos(2 * a) -
       2 * Math.cos(3 * a) -
       Math.cos(4 * a)
-    ) * scale;
+    ) *
+    scale;
 
   return {
-    x: x,
+    x,
     y: -y
   };
 }
 
 
 /* =========================================================
-   CREATE PARTICLE
-========================================================= */
-
-function createParticle() {
-
-  const base =
-    Math.min(
-      window.innerWidth,
-      window.innerHeight
-    ) / 55;
-
-  const a =
-    Math.random() *
-    Math.PI *
-    2;
-
-  const sc =
-    (
-      0.6 +
-      Math.random() * 10.5
-    ) *
-    (base / 12);
-
-  const pos =
-    heart(a, sc);
-
-  return {
-
-    tx: pos.x,
-    ty: pos.y,
-
-    x: pos.x,
-    y: pos.y,
-
-    size:
-      0.55 +
-      Math.random() * 1.1,
-
-    color:
-      colors[
-        Math.floor(
-          Math.random() *
-          colors.length
-        )
-      ],
-
-    life: 1,
-
-    decay:
-      0.002 +
-      Math.random() * 0.0028,
-
-    vx: 0,
-    vy: 0
-  };
-}
-
-
-/* =========================================================
-   INIT HEART
+   CREATE HEART
 ========================================================= */
 
 function initHeart() {
 
-  particles = [];
+  const base =
+    Math.min(
+      screenWidth,
+      screenHeight
+    ) / 55;
+
 
   for (
     let i = 0;
@@ -282,110 +671,241 @@ function initHeart() {
     i++
   ) {
 
-    particles.push(
-      createParticle()
-    );
+    const a =
+      (
+        i /
+        PARTICLE_COUNT
+      ) *
+      Math.PI *
+      2;
+
+
+    const radius =
+      0.60 +
+      Math.random() * 10.5;
+
+
+    const sc =
+      radius *
+      (base / 12);
+
+
+    const pos =
+      heart(
+        a,
+        sc
+      );
+
+
+    const index =
+      i * 2;
+
+
+    targets[index] =
+      pos.x;
+
+    targets[index + 1] =
+      pos.y;
+
+
+    positions[index] =
+      pos.x;
+
+    positions[index + 1] =
+      pos.y;
+
+
+    velocities[index] = 0;
+    velocities[index + 1] = 0;
+
+
+    sizes[i] =
+      1.2 +
+      Math.random() * 2.2;
+
+
+    randoms[i] =
+      Math.random();
+
+
+    particleAlpha[i] =
+      0.55 +
+      Math.random() * 0.45;
+
+
+    particlePhase[i] =
+      Math.random() *
+      Math.PI *
+      2;
   }
+
+
+  gl.bindBuffer(
+    gl.ARRAY_BUFFER,
+    positionBuffer
+  );
+
+  gl.bufferSubData(
+    gl.ARRAY_BUFFER,
+    0,
+    positions
+  );
 }
 
 
 /* =========================================================
-   FREQUENCY ANALYSIS
+   KICK FREQUENCY
 ========================================================= */
 
-function getBands() {
+/*
+   ВАЖНО:
+
+   Саб 20–80 Hz здесь полностью отсутствует.
+
+   Для heartbeat используется ТОЛЬКО:
+
+   80–200 Hz
+
+   Это диапазон кика, который мы
+   используем для определения удара.
+*/
+
+function getKickEnergy() {
 
   analyser.getByteFrequencyData(
     dataArray
   );
+
 
   const binHz =
     audioCtx.sampleRate /
     analyser.fftSize;
 
 
-  function getAverage(minHz, maxHz) {
-
-    const start =
-      Math.max(
-        0,
-        Math.floor(
-          minHz / binHz
-        )
-      );
-
-    const end =
-      Math.min(
-        dataArray.length,
-        Math.ceil(
-          maxHz / binHz
-        )
-      );
-
-    let sum = 0;
-
-    for (
-      let i = start;
-      i < end;
-      i++
-    ) {
-
-      sum += dataArray[i];
-    }
-
-    return (
-      sum /
-      Math.max(
-        1,
-        end - start
-      ) /
-      255
+  const start =
+    Math.max(
+      0,
+      Math.floor(
+        80 / binHz
+      )
     );
+
+
+  const end =
+    Math.min(
+      dataArray.length,
+      Math.ceil(
+        200 / binHz
+      )
+    );
+
+
+  let sum = 0;
+
+
+  for (
+    let i = start;
+    i < end;
+    i++
+  ) {
+
+    sum +=
+      dataArray[i] / 255;
   }
 
 
-  /*
-    Отдельные диапазоны.
-
-    20–60:
-    саббас
-
-    60–120:
-    основной кик
-
-    120–200:
-    тело кика
-
-    200–2000:
-    середина
-
-    2000–8000:
-    верх
-  */
-
-  const sub =
-    getAverage(20, 60);
-
-  const kick =
-    getAverage(60, 120);
-
-  const kickBody =
-    getAverage(120, 200);
-
-  const mid =
-    getAverage(200, 2000);
-
-  const high =
-    getAverage(2000, 8000);
+  return (
+    sum /
+    Math.max(
+      1,
+      end - start
+    )
+  );
+}
 
 
-  return {
-    sub,
-    kick,
-    kickBody,
-    mid,
-    high
-  };
+/* =========================================================
+   KICK SPECTRAL FLUX
+========================================================= */
+
+/*
+   Flux также считаем ТОЛЬКО
+   внутри 80–200 Hz.
+
+   Поэтому высокие частоты,
+   саб и прочий звук не могут
+   сами вызвать heartbeat.
+*/
+
+function getKickFlux() {
+
+  const binHz =
+    audioCtx.sampleRate /
+    analyser.fftSize;
+
+
+  const start =
+    Math.max(
+      0,
+      Math.floor(
+        80 / binHz
+      )
+    );
+
+
+  const end =
+    Math.min(
+      dataArray.length,
+      Math.ceil(
+        200 / binHz
+      )
+    );
+
+
+  let flux = 0;
+
+
+  for (
+    let i = start;
+    i < end;
+    i++
+  ) {
+
+    const current =
+      dataArray[i] / 255;
+
+    const previous =
+      previousSpectrum[i];
+
+
+    const diff =
+      current -
+      previous;
+
+
+    /*
+      Нас интересует только
+      появление новой энергии.
+    */
+
+    if (diff > 0) {
+
+      flux += diff;
+    }
+
+
+    previousSpectrum[i] =
+      current;
+  }
+
+
+  return (
+    flux /
+    Math.max(
+      1,
+      end - start
+    )
+  );
 }
 
 
@@ -393,71 +913,74 @@ function getBands() {
    KICK DETECTOR
 ========================================================= */
 
-function detectKick(bands) {
+function detectKick() {
 
   /*
-    Формируем энергию именно
-    низкого удара.
-
-    Главный вес:
-    60–120 Hz.
-
-    Саб и тело используются
-    как дополнительные признаки.
+    Получаем ТОЛЬКО энергию
+    80–200 Hz.
   */
 
   const energy =
-      bands.kick * 0.65 +
-      bands.sub * 0.20 +
-      bands.kickBody * 0.15;
+    getKickEnergy();
 
 
   /*
-    Добавляем новое значение
-    в историю.
+    Получаем резкий прирост
+    энергии именно в 80–200 Hz.
   */
+
+  const flux =
+    getKickFlux();
+
 
   kickHistory.push(
     energy
   );
 
+  fluxHistory.push(
+    flux
+  );
+
 
   /*
-    История примерно последних
-    200–250 мс.
-
-    При 60 FPS это около 15 кадров.
+    Около 300 ms истории.
   */
 
   if (
-    kickHistory.length > 15
+    kickHistory.length > 18
   ) {
 
     kickHistory.shift();
   }
 
 
+  if (
+    fluxHistory.length > 18
+  ) {
+
+    fluxHistory.shift();
+  }
+
+
   /*
-    Если истории пока мало,
-    не пытаемся определить удар.
+    Нужно немного истории,
+    чтобы понять, был ли резкий
+    скачок относительно предыдущего
+    состояния.
   */
 
   if (
     kickHistory.length < 8
   ) {
 
-    return false;
+    return {
+      detected: false,
+      strength: 0
+    };
   }
 
 
-  /*
-    Находим средний уровень
-    недавнего баса.
-
-    Это наш "обычный уровень".
-  */
-
-  let sum = 0;
+  let energySum = 0;
 
   for (
     let i = 0;
@@ -465,75 +988,144 @@ function detectKick(bands) {
     i++
   ) {
 
-    sum += kickHistory[i];
+    energySum +=
+      kickHistory[i];
   }
 
-  const average =
-    sum /
-    (kickHistory.length - 1);
 
+  const averageEnergy =
+    energySum /
+    (
+      kickHistory.length - 1
+    );
 
-  /*
-    Нас интересует насколько
-    текущая энергия выше
-    обычной.
-  */
 
   const rise =
-    energy - average;
+    energy -
+    averageEnergy;
+
+
+  let fluxSum = 0;
+
+  for (
+    let i = 0;
+    i < fluxHistory.length - 1;
+    i++
+  ) {
+
+    fluxSum +=
+      fluxHistory[i];
+  }
+
+
+  const averageFlux =
+    fluxSum /
+    (
+      fluxHistory.length - 1
+    );
+
+
+  const fluxRise =
+    flux -
+    averageFlux;
 
 
   /*
-    Дополнительная проверка:
-
-    кик должен быть достаточно
-    громким сам по себе.
+    Кик должен иметь
+    достаточно энергии.
   */
 
   const loudEnough =
-    energy > 0.16;
+    energy > 0.10;
 
 
   /*
-    И он должен заметно вырасти
-    относительно недавнего уровня.
+    Должен быть заметный
+    скачок энергии.
   */
 
-  const strongAttack =
-    rise > 0.035;
+  const energyAttack =
+    rise > 0.018;
 
 
   /*
-    Не разрешаем несколько ударов
-    подряд от одного и того же
-    длинного басового сигнала.
+    Либо заметная атака
+    спектра.
   */
+
+  const spectralAttack =
+    fluxRise > 0.0025;
+
 
   const now =
     performance.now();
 
+
   const cooldownPassed =
-    now - lastKickTime >
+    now -
+    lastKickTime >
     KICK_COOLDOWN;
 
 
   /*
-    Финальное решение.
+    Главное условие:
+
+    80–200 Hz достаточно сильные
+    +
+    произошла атака
+    +
+    прошло немного времени
+    с предыдущего кика.
   */
 
-  if (
+  const detected =
     loudEnough &&
-    strongAttack &&
-    cooldownPassed
-  ) {
+    energyAttack &&
+    (
+      spectralAttack ||
+      rise > 0.045
+    ) &&
+    cooldownPassed;
 
-    lastKickTime = now;
 
-    return true;
+  if (!detected) {
+
+    return {
+      detected: false,
+      strength: 0
+    };
   }
 
 
-  return false;
+  lastKickTime =
+    now;
+
+
+  /*
+    Сила сердцебиения зависит
+    от того, насколько сильно
+    вырос кик.
+
+    Ограничиваем значение,
+    чтобы очень громкий кик
+    не разорвал форму сердца.
+  */
+
+  const strength =
+    Math.min(
+      1,
+      Math.max(
+        0.25,
+        rise * 12 +
+        energy * 1.5
+      )
+    );
+
+
+  return {
+    detected: true,
+    strength
+  };
 }
 
 
@@ -543,321 +1135,356 @@ function detectKick(bands) {
 
 function updateAudio() {
 
-  const bands =
-    getBands();
+  /*
+    Если аудио реально остановлено,
+    никакого анализа.
+  */
+
+  if (
+    !isPlaying ||
+    audio.paused ||
+    audio.ended
+  ) {
+
+    beat = 0;
+
+    return;
+  }
+
+
+  const kick =
+    detectKick();
 
 
   /*
-    Определяем новый удар.
+    СЕРДЦЕБИЕНИЕ ПРОИСХОДИТ
+    ТОЛЬКО ЗДЕСЬ.
+
+    Если kick.detected === false,
+    новый heartbeat НЕ создаётся.
   */
 
-  const isKick =
-    detectKick(bands);
+  if (kick.detected) {
 
-
-  if (isKick) {
-
-    /*
-      Настоящий новый удар.
-
-      Не постоянный бас,
-      а именно атака.
-    */
-
-    beat = 1;
+    beat =
+      kick.strength;
   }
 
 
   /*
-    Удар быстро затухает.
+    После удара сердце
+    быстро возвращается
+    обратно.
 
-    1
-    ↓
-    0.84
-    ↓
-    0.70
-    ↓
-    0.59
-    ↓
-    ...
+    Это не создаёт новые удары —
+    просто затухает уже
+    обнаруженный кик.
   */
 
-  beat *= 0.84;
-
-
-  /*
-    Бас влияет на сердце
-    намного слабее.
-
-    Поэтому постоянный бас
-    не превращается в
-    постоянное сердцебиение.
-  */
-
-  bassLevel =
-    bassLevel * 0.88 +
-    (
-      bands.sub * 0.55 +
-      bands.kick * 0.45
-    ) * 0.12;
-
-
-  return bands;
+  beat *= 0.82;
 }
 
 
 /* =========================================================
-   DRAW HEART
+   PARTICLE PHYSICS
 ========================================================= */
 
-function drawHeart() {
+function updateParticles(
+  deltaTime
+) {
 
-  const cx =
-    window.innerWidth / 2;
+  /*
+    НЕТ bassLevel.
 
-  const cy =
-    window.innerHeight / 2 - 10;
+    Размер сердца меняется
+    исключительно от beat,
+    который создаётся только
+    обнаруженным киком.
+  */
+
+  const targetScale =
+    1.0 +
+    beat * 0.18;
+
+
+  heartScale +=
+    (
+      targetScale -
+      heartScale
+    ) * 0.20;
+
+
+  const spring =
+    0.075;
+
+
+  const damping =
+    0.82;
 
 
   /*
-    Базовый размер сердца.
+    Импульс исключительно
+    от обнаруженного кика.
   */
 
-  let scale =
-    1;
-
-
-  /*
-    Постоянный бас:
-    очень маленькое изменение.
-  */
-
-  scale +=
-    bassLevel * 0.055;
-
-
-  /*
-    Настоящий кик:
-    заметный удар.
-
-    Сердце увеличивается,
-    но не разлетается.
-  */
-
-  scale +=
+  const beatImpulse =
     beat * 0.18;
 
 
   for (
-    let i = particles.length - 1;
-    i >= 0;
-    i--
+    let i = 0;
+    i < PARTICLE_COUNT;
+    i++
   ) {
 
-    const p =
-      particles[i];
+    const index =
+      i * 2;
 
 
-    /*
-      Новая целевая позиция.
-    */
+    let x =
+      positions[index];
+
+    let y =
+      positions[index + 1];
+
+
+    let vx =
+      velocities[index];
+
+    let vy =
+      velocities[index + 1];
+
 
     const targetX =
-      p.tx * scale;
+      targets[index] *
+      heartScale;
+
 
     const targetY =
-      p.ty * scale;
+      targets[index + 1] *
+      heartScale;
 
 
     /*
-      Плавное движение
-      к форме сердца.
+      Возврат к форме сердца.
     */
 
-    p.vx +=
+    vx +=
       (
         targetX -
-        p.x
-      ) * 0.075;
+        x
+      ) * spring;
 
-    p.vy +=
+
+    vy +=
       (
         targetY -
-        p.y
-      ) * 0.075;
+        y
+      ) * spring;
 
 
     /*
-      Маленький импульс
-      наружу непосредственно
-      во время удара.
-
-      Он очень слабый специально:
-      сердце должно "биться",
-      а не взрываться.
+      Короткий наружный импульс
+      во время heartbeat.
     */
 
     if (
-      beat > 0.45
+      beat > 0.25
     ) {
 
-      const distance =
+      const length =
         Math.sqrt(
-          p.x * p.x +
-          p.y * p.y
+          x * x +
+          y * y
         ) || 1;
 
+
       const nx =
-        p.x / distance;
+        x / length;
 
       const ny =
-        p.y / distance;
+        y / length;
 
 
-      const impulse =
-        beat * 0.20;
+      vx +=
+        nx *
+        beatImpulse;
 
 
-      p.vx +=
-        nx * impulse;
-
-      p.vy +=
-        ny * impulse;
+      vy +=
+        ny *
+        beatImpulse;
     }
 
 
     /*
-      Движение.
+      Микродвижение частиц.
+      Оно не связано с аудио
+      и не создаёт heartbeat.
     */
 
-    p.x += p.vx;
-    p.y += p.vy;
+    const phase =
+      particlePhase[i];
 
 
-    /*
-      Сопротивление.
-    */
-
-    p.vx *= 0.84;
-    p.vy *= 0.84;
-
-
-    /*
-      Жизнь.
-    */
-
-    p.life -=
-      p.decay;
-
-
-    if (
-      p.life <= 0
-    ) {
-
-      particles.splice(
-        i,
-        1
-      );
-
-      continue;
-    }
-
-
-    /*
-      Размер частицы.
-
-      На ударе чуть увеличивается.
-    */
-
-    const size =
-      p.size *
-      Math.max(
-        p.life,
-        0.3
+    const micro =
+      Math.sin(
+        performance.now() * 0.0014 +
+        phase
       ) *
-      (
-        1 +
-        beat * 0.15
-      );
+      0.008;
 
 
-    ctx.beginPath();
-
-    ctx.arc(
-      cx + p.x,
-      cy + p.y,
-      size,
-      0,
-      Math.PI * 2
-    );
+    vx +=
+      micro *
+      0.02;
 
 
-    ctx.fillStyle =
-      p.color;
+    vy +=
+      micro *
+      0.02;
 
-    ctx.globalAlpha =
-      p.life * 0.92;
 
-    ctx.fill();
+    x +=
+      vx *
+      deltaTime;
+
+
+    y +=
+      vy *
+      deltaTime;
+
+
+    vx *=
+      damping;
+
+    vy *=
+      damping;
+
+
+    positions[index] =
+      x;
+
+    positions[index + 1] =
+      y;
+
+    velocities[index] =
+      vx;
+
+    velocities[index + 1] =
+      vy;
   }
 
 
-  ctx.globalAlpha = 1;
+  gl.bindBuffer(
+    gl.ARRAY_BUFFER,
+    positionBuffer
+  );
 
-
-  /*
-    Поддерживаем количество
-    частиц постоянным.
-  */
-
-  while (
-    particles.length <
-    PARTICLE_COUNT
-  ) {
-
-    particles.push(
-      createParticle()
-    );
-  }
+  gl.bufferSubData(
+    gl.ARRAY_BUFFER,
+    0,
+    positions
+  );
 }
 
 
 /* =========================================================
-   MAIN LOOP
+   DRAW
 ========================================================= */
+
+let lastFrameTime =
+  performance.now();
 
 function draw() {
 
-  ctx.fillStyle =
-    '#000';
+  const now =
+    performance.now();
 
-  ctx.fillRect(
-    0,
-    0,
-    window.innerWidth,
-    window.innerHeight
-  );
 
+  const delta =
+    Math.min(
+      (now - lastFrameTime) /
+      16.666,
+      2
+    );
+
+
+  lastFrameTime =
+    now;
+
+
+  /*
+    Очень важно:
+
+    проверяем не только свой
+    isPlaying, но и реальное
+    состояние audio.paused.
+
+    Поэтому после паузы
+    никакого продолжения
+    анализа быть не может.
+  */
 
   if (
     isPlaying &&
-    analyser
+    analyser &&
+    !audio.paused &&
+    !audio.ended
   ) {
 
     updateAudio();
+
   } else {
 
     /*
-      Если музыка остановлена,
-      никаких старых импульсов.
+      Музыка остановлена.
+
+      Heartbeat сразу исчезает.
     */
 
-    beat *= 0.82;
-    bassLevel *= 0.92;
+    beat *= 0.78;
   }
 
 
-  drawHeart();
+  updateParticles(
+    delta
+  );
+
+
+  gl.clearColor(
+    0,
+    0,
+    0,
+    1
+  );
+
+  gl.clear(
+    gl.COLOR_BUFFER_BIT
+  );
+
+
+  gl.uniform1f(
+    scaleLocation,
+    1
+  );
+
+  gl.uniform1f(
+    beatLocation,
+    beat
+  );
+
+  gl.uniform1f(
+    timeLocation,
+    now * 0.001
+  );
+
+
+  gl.drawArrays(
+    gl.POINTS,
+    0,
+    PARTICLE_COUNT
+  );
 
 
   requestAnimationFrame(
@@ -895,22 +1522,25 @@ async function initAudio() {
 
 
   /*
-    2048 достаточно хорошо
-    разделяет низкие частоты.
+    Высокое разрешение FFT.
+
+    При 4096:
+    80–200 Hz можно анализировать
+    достаточно подробно.
   */
 
   analyser.fftSize =
-    2048;
+    4096;
 
 
   /*
-    Маленькое сглаживание.
+    Минимальное сглаживание.
 
-    Нам нужна быстрая атака кика.
+    Нам нужна именно атака кика.
   */
 
   analyser.smoothingTimeConstant =
-    0.08;
+    0.035;
 
 
   dataArray =
@@ -919,9 +1549,16 @@ async function initAudio() {
     );
 
 
+  previousSpectrum =
+    new Float32Array(
+      analyser.frequencyBinCount
+    );
+
+
   source.connect(
     analyser
   );
+
 
   analyser.connect(
     audioCtx.destination
@@ -930,7 +1567,7 @@ async function initAudio() {
 
 
 /* =========================================================
-   PLAY BUTTON
+   PLAY / PAUSE
 ========================================================= */
 
 playBtn.addEventListener(
@@ -953,26 +1590,29 @@ playBtn.addEventListener(
         }
 
 
-        await audio.play();
-
-
-        isPlaying = true;
-
-
         /*
-          Сбрасываем детектор.
+          Перед запуском
+          очищаем старые данные.
         */
 
         kickHistory = [];
 
+        fluxHistory = [];
+
+        previousSpectrum.fill(0);
+
         beat = 0;
 
-        bassLevel = 0;
+        heartScale = 1;
 
         lastKickTime = 0;
 
 
-        initHeart();
+        await audio.play();
+
+
+        isPlaying =
+          true;
 
 
         playBtn.textContent =
@@ -985,15 +1625,35 @@ playBtn.addEventListener(
         );
 
         alert(
-          'Ошибка аудио'
+          'Не удалось запустить аудио.'
         );
       }
+
 
     } else {
 
       audio.pause();
 
-      isPlaying = false;
+      isPlaying =
+        false;
+
+
+      /*
+        Полный сброс heartbeat.
+      */
+
+      beat = 0;
+
+      heartScale = 1;
+
+      kickHistory = [];
+
+      fluxHistory = [];
+
+      previousSpectrum.fill(0);
+
+      lastKickTime = 0;
+
 
       playBtn.textContent =
         '▶ Запустить';
@@ -1003,10 +1663,39 @@ playBtn.addEventListener(
 
 
 /* =========================================================
+   AUDIO ENDED
+========================================================= */
+
+audio.addEventListener(
+  'ended',
+  () => {
+
+    isPlaying =
+      false;
+
+    beat = 0;
+
+    heartScale = 1;
+
+    kickHistory = [];
+
+    fluxHistory = [];
+
+    previousSpectrum.fill(0);
+
+    lastKickTime = 0;
+
+    playBtn.textContent =
+      '▶ Запустить';
+  }
+);
+
+
+/* =========================================================
    START
 ========================================================= */
 
-initHeart();
+resize();
 
 requestAnimationFrame(
   draw
