@@ -61,8 +61,53 @@
       cursor: pointer;
     }
 
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
     button:active {
       transform: scale(0.97);
+    }
+
+    .debugToggle {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 11;
+      background: transparent;
+      border: none;
+      color: #444;
+      font-size: 18px;
+      padding: 6px 10px;
+      min-width: auto;
+    }
+
+    .debug {
+      position: fixed;
+      top: 46px;
+      right: 12px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid #222;
+      color: #7CFC7C;
+      font: 11px/1.6 monospace;
+      padding: 10px 12px;
+      border-radius: 8px;
+      white-space: pre;
+      min-width: 190px;
+    }
+
+    .debug.hidden {
+      display: none;
+    }
+
+    .debug .bar {
+      display: inline-block;
+      height: 6px;
+      background: #7CFC7C;
+      border-radius: 3px;
+      vertical-align: middle;
     }
   </style>
 </head>
@@ -73,32 +118,54 @@
 
 <canvas id="canvas"></canvas>
 
+<button id="debugToggle" title="Отладка">⚙</button>
+<div id="debugPanel" class="debug hidden"></div>
+
 <div class="controls">
-  <button id="playBtn">▶ Запустить</button>
+  <button id="playBtn" disabled>Загрузка…</button>
 </div>
 
-<audio
-  id="audio"
-  src="white_tee.mp3"
-  preload="auto">
-</audio>
-
-
 <script>
+
+/* =========================================================
+   НАСТРОЙКИ, КОТОРЫЕ МОЖНО КРУТИТЬ РУКАМИ
+   ---------------------------------------------------------
+   Если сердце не бьётся вообще:
+     - уменьши ENERGY_SENSITIVITY и/или FLUX_SENSITIVITY
+     - уменьши MIN_ENERGY_FLOOR
+
+   Если бьётся слишком часто / на всё подряд:
+     - увеличь ENERGY_SENSITIVITY и/или FLUX_SENSITIVITY
+     - увеличь KICK_COOLDOWN
+
+   Открой панель отладки (значок ⚙ сверху справа) —
+   там видно текущую энергию и порог в реальном времени,
+   так проще подобрать значения под конкретный трек.
+========================================================= */
+
+const AUDIO_SRC = 'white_tee.mp3';
+
+const KICK_BAND_LOW_HZ = 80;
+const KICK_BAND_HIGH_HZ = 200;
+
+const ENERGY_SENSITIVITY = 1.6;   // во сколько "стандартных отклонений" энергия должна превысить средний уровень
+const FLUX_SENSITIVITY = 1.4;     // то же самое, но для скорости нарастания (атаки)
+const MIN_ENERGY_FLOOR = 0.025;   // ниже этого уровня удар не засчитывается, даже если "статистически" превышен порог
+const KICK_COOLDOWN = 120;        // ms, минимальный промежуток между ударами
+const STATS_WINDOW = 120;         // сколько последних кадров анализа используется для среднего/отклонения (~2 сек при 60fps)
+
 
 /* =========================================================
    WEBGL
 ========================================================= */
 
-const canvas =
-  document.getElementById('canvas');
+const canvas = document.getElementById('canvas');
 
-const gl =
-  canvas.getContext('webgl', {
-    alpha: false,
-    antialias: false,
-    powerPreference: 'high-performance'
-  });
+const gl = canvas.getContext('webgl', {
+  alpha: false,
+  antialias: false,
+  powerPreference: 'high-performance'
+});
 
 if (!gl) {
   alert('WebGL не поддерживается этим браузером.');
@@ -107,21 +174,206 @@ if (!gl) {
 
 
 /* =========================================================
-   AUDIO
+   UI ЭЛЕМЕНТЫ
 ========================================================= */
 
-const audio =
-  document.getElementById('audio');
+const playBtn = document.getElementById('playBtn');
+const debugToggle = document.getElementById('debugToggle');
+const debugPanel = document.getElementById('debugPanel');
 
-const playBtn =
-  document.getElementById('playBtn');
+let debugVisible = false;
+
+debugToggle.addEventListener('click', () => {
+  debugVisible = !debugVisible;
+  debugPanel.classList.toggle('hidden', !debugVisible);
+});
+
+
+/* =========================================================
+   АУДИО
+   ---------------------------------------------------------
+   Вместо потокового <audio> элемента файл целиком
+   загружается и декодируется в память ДО начала
+   воспроизведения. Это убирает заикания из-за сети —
+   после старта звук идёт из буфера, а не из сети,
+   и анализатор частот получает стабильный, синхронный поток.
+========================================================= */
 
 let audioCtx = null;
+let audioBuffer = null;
+let sourceNode = null;
 let analyser = null;
 let dataArray = null;
 let previousSpectrum = null;
 
 let isPlaying = false;
+let isLoaded = false;
+
+
+async function loadAudio() {
+
+  try {
+
+    const response = await fetch(AUDIO_SRC);
+
+    if (!response.ok) {
+      throw new Error('HTTP ' + response.status);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+
+    // AudioContext создаётся здесь только для декодирования;
+    // фактический звук будет запущен по жесту пользователя.
+    const tempCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    audioBuffer = await tempCtx.decodeAudioData(arrayBuffer);
+
+    await tempCtx.close();
+
+    isLoaded = true;
+
+    playBtn.disabled = false;
+    playBtn.textContent = '▶ Запустить';
+
+  } catch (error) {
+
+    console.error('Не удалось загрузить аудио:', error);
+
+    playBtn.textContent = '⚠ Ошибка загрузки';
+
+    playBtn.disabled = false;
+
+    // Позволяем попробовать снова по клику.
+    isLoaded = false;
+  }
+}
+
+
+function setupAnalyser() {
+
+  if (!audioCtx) {
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    analyser = audioCtx.createAnalyser();
+
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.05;
+
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    previousSpectrum = new Float32Array(analyser.frequencyBinCount);
+
+    analyser.connect(audioCtx.destination);
+  }
+}
+
+
+function startPlayback() {
+
+  setupAnalyser();
+
+  sourceNode = audioCtx.createBufferSource();
+  sourceNode.buffer = audioBuffer;
+
+  sourceNode.connect(analyser);
+
+  sourceNode.onended = () => {
+
+    // onended срабатывает и при обычном завершении трека,
+    // и при принудительной остановке (stop()). Различаем по флагу.
+    if (isPlaying) {
+      isPlaying = false;
+      resetKickState();
+      playBtn.textContent = '▶ Запустить';
+    }
+  };
+
+  previousSpectrum.fill(0);
+  resetKickState();
+
+  sourceNode.start(0);
+
+  isPlaying = true;
+
+  playBtn.textContent = '⏸ Пауза';
+}
+
+
+function stopPlayback() {
+
+  isPlaying = false;
+
+  if (sourceNode) {
+
+    try {
+      sourceNode.onended = null;
+      sourceNode.stop();
+    } catch (e) {
+      // уже остановлен — не проблема
+    }
+
+    sourceNode = null;
+  }
+
+  resetKickState();
+
+  playBtn.textContent = '▶ Запустить';
+}
+
+
+playBtn.addEventListener('click', async () => {
+
+  if (!isLoaded) {
+
+    // клик по кнопке "Ошибка загрузки" — пробуем снова
+    playBtn.disabled = true;
+    playBtn.textContent = 'Загрузка…';
+
+    await loadAudio();
+
+    return;
+  }
+
+  if (!isPlaying) {
+
+    try {
+
+      if (!sourceNode) {
+
+        // первый запуск или запуск после полного завершения трека
+        startPlayback();
+
+      } else {
+
+        // возобновление после паузы — пауза сделана через suspend(),
+        // поэтому просто резюмируем контекст, тот же sourceNode продолжит идти.
+        await audioCtx.resume();
+
+        isPlaying = true;
+
+        playBtn.textContent = '⏸ Пауза';
+      }
+
+    } catch (error) {
+
+      console.error(error);
+
+      alert('Не удалось запустить аудио.');
+    }
+
+  } else {
+
+    // Пауза через приостановку всего аудио-контекста.
+    // Это не завершает sourceNode — воспроизведение можно продолжить точно с того же места.
+    await audioCtx.suspend();
+
+    isPlaying = false;
+
+    beat = 0;
+
+    playBtn.textContent = '▶ Запустить';
+  }
+});
 
 
 /* =========================================================
@@ -130,26 +382,13 @@ let isPlaying = false;
 
 const PARTICLE_COUNT = 4000;
 
-const positions =
-  new Float32Array(PARTICLE_COUNT * 2);
-
-const velocities =
-  new Float32Array(PARTICLE_COUNT * 2);
-
-const targets =
-  new Float32Array(PARTICLE_COUNT * 2);
-
-const sizes =
-  new Float32Array(PARTICLE_COUNT);
-
-const randoms =
-  new Float32Array(PARTICLE_COUNT);
-
-const particleAlpha =
-  new Float32Array(PARTICLE_COUNT);
-
-const particlePhase =
-  new Float32Array(PARTICLE_COUNT);
+const positions = new Float32Array(PARTICLE_COUNT * 2);
+const velocities = new Float32Array(PARTICLE_COUNT * 2);
+const targets = new Float32Array(PARTICLE_COUNT * 2);
+const sizes = new Float32Array(PARTICLE_COUNT);
+const randoms = new Float32Array(PARTICLE_COUNT);
+const particleAlpha = new Float32Array(PARTICLE_COUNT);
+const particlePhase = new Float32Array(PARTICLE_COUNT);
 
 
 /* =========================================================
@@ -159,12 +398,28 @@ const particlePhase =
 let beat = 0;
 let heartScale = 1;
 
-let kickHistory = [];
+let energyHistory = [];
 let fluxHistory = [];
 
 let lastKickTime = 0;
+let lastKickStrength = 0;
 
-const KICK_COOLDOWN = 140;
+// для панели отладки
+let debugEnergy = 0;
+let debugThreshold = 0;
+let debugFlux = 0;
+let debugFluxThreshold = 0;
+let debugFrameCounter = 0;
+
+
+function resetKickState() {
+  energyHistory = [];
+  fluxHistory = [];
+  lastKickTime = 0;
+  beat = 0;
+  heartScale = 1;
+  if (previousSpectrum) previousSpectrum.fill(0);
+}
 
 
 /* =========================================================
@@ -172,7 +427,6 @@ const KICK_COOLDOWN = 140;
 ========================================================= */
 
 const vertexShaderSource = `
-
 attribute vec2 a_position;
 attribute float a_size;
 attribute float a_alpha;
@@ -187,97 +441,44 @@ varying float v_alpha;
 varying float v_random;
 
 void main() {
-
     vec2 position = a_position;
 
-    /*
-      Очень маленькое живое движение.
-      Оно НЕ зависит от баса.
-      Оно только слегка оживляет частицы.
-    */
+    float wave = sin(u_time * 1.4 + a_random * 20.0) * 0.12;
 
-    float wave =
-        sin(
-            u_time * 1.4 +
-            a_random * 20.0
-        ) * 0.12;
-
-    position +=
-        normalize(position + vec2(0.0001)) *
-        wave *
-        (0.2 + u_beat * 0.4);
+    position += normalize(position + vec2(0.0001)) * wave * (0.2 + u_beat * 0.4);
 
     position *= u_scale;
 
-    vec2 zeroToOne =
-        position / u_resolution;
-
-    vec2 zeroToTwo =
-        zeroToOne * 2.0;
-
-    vec2 clipSpace =
-        zeroToTwo - 1.0;
+    vec2 zeroToOne = position / u_resolution;
+    vec2 zeroToTwo = zeroToOne * 2.0;
+    vec2 clipSpace = zeroToTwo - 1.0;
 
     clipSpace.y *= -1.0;
 
-    gl_Position =
-        vec4(clipSpace, 0.0, 1.0);
+    gl_Position = vec4(clipSpace, 0.0, 1.0);
 
-    gl_PointSize =
-        a_size *
-        (
-          1.0 +
-          u_beat * 0.16
-        );
+    gl_PointSize = a_size * (1.0 + u_beat * 0.16);
 
-    v_alpha =
-        a_alpha *
-        (
-          0.78 +
-          u_beat * 0.22
-        );
-
-    v_random =
-        a_random;
+    v_alpha = a_alpha * (0.78 + u_beat * 0.22);
+    v_random = a_random;
 }
 `;
 
-
 const fragmentShaderSource = `
-
 precision mediump float;
 
 varying float v_alpha;
 varying float v_random;
 
 void main() {
+    vec2 uv = gl_PointCoord - vec2(0.5);
+    float dist = length(uv);
 
-    vec2 uv =
-        gl_PointCoord -
-        vec2(0.5);
+    float alpha = smoothstep(0.5, 0.05, dist);
 
-    float dist =
-        length(uv);
+    vec3 color = mix(vec3(1.0, 0.20, 0.48), vec3(1.0, 0.55, 0.72), v_random);
 
-    float alpha =
-        smoothstep(
-            0.5,
-            0.05,
-            dist
-        );
-
-    vec3 color =
-        mix(
-            vec3(1.0, 0.20, 0.48),
-            vec3(1.0, 0.55, 0.72),
-            v_random
-        );
-
-    gl_FragColor =
-        vec4(
-            color,
-            alpha * v_alpha
-        );
+    gl_FragColor = vec4(color, alpha * v_alpha);
 }
 `;
 
@@ -286,102 +487,43 @@ void main() {
    SHADER HELPERS
 ========================================================= */
 
-function createShader(
-  type,
-  source
-) {
+function createShader(type, source) {
 
-  const shader =
-    gl.createShader(type);
+  const shader = gl.createShader(type);
 
-  gl.shaderSource(
-    shader,
-    source
-  );
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
 
-  gl.compileShader(
-    shader
-  );
-
-  if (
-    !gl.getShaderParameter(
-      shader,
-      gl.COMPILE_STATUS
-    )
-  ) {
-
-    console.error(
-      gl.getShaderInfoLog(shader)
-    );
-
-    throw new Error(
-      'Shader compilation error'
-    );
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(shader));
+    throw new Error('Shader compilation error');
   }
 
   return shader;
 }
 
 
-function createProgram(
-  vertexSource,
-  fragmentSource
-) {
+function createProgram(vertexSource, fragmentSource) {
 
-  const vertexShader =
-    createShader(
-      gl.VERTEX_SHADER,
-      vertexSource
-    );
+  const vertexShader = createShader(gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = createShader(gl.FRAGMENT_SHADER, fragmentSource);
 
-  const fragmentShader =
-    createShader(
-      gl.FRAGMENT_SHADER,
-      fragmentSource
-    );
+  const program = gl.createProgram();
 
-  const program =
-    gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
 
-  gl.attachShader(
-    program,
-    vertexShader
-  );
-
-  gl.attachShader(
-    program,
-    fragmentShader
-  );
-
-  gl.linkProgram(
-    program
-  );
-
-  if (
-    !gl.getProgramParameter(
-      program,
-      gl.LINK_STATUS
-    )
-  ) {
-
-    console.error(
-      gl.getProgramInfoLog(program)
-    );
-
-    throw new Error(
-      'Program linking error'
-    );
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(program));
+    throw new Error('Program linking error');
   }
 
   return program;
 }
 
 
-const program =
-  createProgram(
-    vertexShaderSource,
-    fragmentShaderSource
-  );
+const program = createProgram(vertexShaderSource, fragmentShaderSource);
 
 gl.useProgram(program);
 
@@ -390,796 +532,325 @@ gl.useProgram(program);
    ATTRIBUTES / UNIFORMS
 ========================================================= */
 
-const positionLocation =
-  gl.getAttribLocation(
-    program,
-    'a_position'
-  );
+const positionLocation = gl.getAttribLocation(program, 'a_position');
+const sizeLocation = gl.getAttribLocation(program, 'a_size');
+const alphaLocation = gl.getAttribLocation(program, 'a_alpha');
+const randomLocation = gl.getAttribLocation(program, 'a_random');
 
-const sizeLocation =
-  gl.getAttribLocation(
-    program,
-    'a_size'
-  );
-
-const alphaLocation =
-  gl.getAttribLocation(
-    program,
-    'a_alpha'
-  );
-
-const randomLocation =
-  gl.getAttribLocation(
-    program,
-    'a_random'
-  );
-
-
-const resolutionLocation =
-  gl.getUniformLocation(
-    program,
-    'u_resolution'
-  );
-
-const scaleLocation =
-  gl.getUniformLocation(
-    program,
-    'u_scale'
-  );
-
-const beatLocation =
-  gl.getUniformLocation(
-    program,
-    'u_beat'
-  );
-
-const timeLocation =
-  gl.getUniformLocation(
-    program,
-    'u_time'
-  );
+const resolutionLocation = gl.getUniformLocation(program, 'u_resolution');
+const scaleLocation = gl.getUniformLocation(program, 'u_scale');
+const beatLocation = gl.getUniformLocation(program, 'u_beat');
+const timeLocation = gl.getUniformLocation(program, 'u_time');
 
 
 /* =========================================================
    GPU BUFFERS
 ========================================================= */
 
-const positionBuffer =
-  gl.createBuffer();
+const positionBuffer = gl.createBuffer();
+const sizeBuffer = gl.createBuffer();
+const alphaBuffer = gl.createBuffer();
+const randomBuffer = gl.createBuffer();
 
-const sizeBuffer =
-  gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(positionLocation);
+gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-const alphaBuffer =
-  gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, sizes, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(sizeLocation);
+gl.vertexAttribPointer(sizeLocation, 1, gl.FLOAT, false, 0, 0);
 
-const randomBuffer =
-  gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, alphaBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, particleAlpha, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(alphaLocation);
+gl.vertexAttribPointer(alphaLocation, 1, gl.FLOAT, false, 0, 0);
 
-
-gl.bindBuffer(
-  gl.ARRAY_BUFFER,
-  positionBuffer
-);
-
-gl.bufferData(
-  gl.ARRAY_BUFFER,
-  positions,
-  gl.DYNAMIC_DRAW
-);
-
-gl.enableVertexAttribArray(
-  positionLocation
-);
-
-gl.vertexAttribPointer(
-  positionLocation,
-  2,
-  gl.FLOAT,
-  false,
-  0,
-  0
-);
-
-
-gl.bindBuffer(
-  gl.ARRAY_BUFFER,
-  sizeBuffer
-);
-
-gl.bufferData(
-  gl.ARRAY_BUFFER,
-  sizes,
-  gl.STATIC_DRAW
-);
-
-gl.enableVertexAttribArray(
-  sizeLocation
-);
-
-gl.vertexAttribPointer(
-  sizeLocation,
-  1,
-  gl.FLOAT,
-  false,
-  0,
-  0
-);
-
-
-gl.bindBuffer(
-  gl.ARRAY_BUFFER,
-  alphaBuffer
-);
-
-gl.bufferData(
-  gl.ARRAY_BUFFER,
-  particleAlpha,
-  gl.STATIC_DRAW
-);
-
-gl.enableVertexAttribArray(
-  alphaLocation
-);
-
-gl.vertexAttribPointer(
-  alphaLocation,
-  1,
-  gl.FLOAT,
-  false,
-  0,
-  0
-);
-
-
-gl.bindBuffer(
-  gl.ARRAY_BUFFER,
-  randomBuffer
-);
-
-gl.bufferData(
-  gl.ARRAY_BUFFER,
-  randoms,
-  gl.STATIC_DRAW
-);
-
-gl.enableVertexAttribArray(
-  randomLocation
-);
-
-gl.vertexAttribPointer(
-  randomLocation,
-  1,
-  gl.FLOAT,
-  false,
-  0,
-  0
-);
+gl.bindBuffer(gl.ARRAY_BUFFER, randomBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, randoms, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(randomLocation);
+gl.vertexAttribPointer(randomLocation, 1, gl.FLOAT, false, 0, 0);
 
 
 /* =========================================================
    BLENDING
 ========================================================= */
 
-gl.enable(
-  gl.BLEND
-);
-
-gl.blendFunc(
-  gl.SRC_ALPHA,
-  gl.ONE);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
 
 /* =========================================================
    RESIZE
+   ---------------------------------------------------------
+   ИСПРАВЛЕНО: раньше при resize пересчитывались sizes/alpha/random
+   (новые случайные значения), но на GPU заново отправлялся только
+   positionBuffer. В итоге при повороте экрана визуальные параметры
+   переставали соответствовать реальным данным на GPU.
+   Теперь size/alpha/random генерируются один раз при старте,
+   а resize пересчитывает только позиции (они зависят от размера экрана).
 ========================================================= */
 
 let screenWidth = 0;
 let screenHeight = 0;
-
-function resize() {
-
-  const dpr =
-    Math.min(
-      window.devicePixelRatio || 1,
-      2
-    );
-
-  screenWidth =
-    window.innerWidth;
-
-  screenHeight =
-    window.innerHeight;
-
-  canvas.width =
-    screenWidth * dpr;
-
-  canvas.height =
-    screenHeight * dpr;
-
-  gl.viewport(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  gl.uniform2f(
-    resolutionLocation,
-    canvas.width,
-    canvas.height
-  );
-
-  initHeart();
-}
-
-window.addEventListener(
-  'resize',
-  resize
-);
+let attributesGenerated = false;
 
 
-/* =========================================================
-   HEART EQUATION
-========================================================= */
+function heart(a, scale) {
 
-function heart(
-  a,
-  scale
-) {
+  const x = 16 * Math.pow(Math.sin(a), 3) * scale;
 
-  const x =
-    16 *
-    Math.pow(
-      Math.sin(a),
-      3
-    ) *
-    scale;
+  const y = (
+    13 * Math.cos(a) -
+    5 * Math.cos(2 * a) -
+    2 * Math.cos(3 * a) -
+    Math.cos(4 * a)
+  ) * scale;
 
-  const y =
-    (
-      13 * Math.cos(a) -
-      5 * Math.cos(2 * a) -
-      2 * Math.cos(3 * a) -
-      Math.cos(4 * a)
-    ) *
-    scale;
-
-  return {
-    x,
-    y: -y
-  };
+  return { x, y: -y };
 }
 
 
-/* =========================================================
-   CREATE HEART
-========================================================= */
+function generateParticleAttributes() {
 
-function initHeart() {
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
 
-  const base =
-    Math.min(
-      screenWidth,
-      screenHeight
-    ) / 55;
+    sizes[i] = 1.2 + Math.random() * 2.2;
+    randoms[i] = Math.random();
+    particleAlpha[i] = 0.55 + Math.random() * 0.45;
+    particlePhase[i] = Math.random() * Math.PI * 2;
+  }
 
+  gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, sizes, gl.STATIC_DRAW);
 
-  for (
-    let i = 0;
-    i < PARTICLE_COUNT;
-    i++
-  ) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, alphaBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, particleAlpha, gl.STATIC_DRAW);
 
-    const a =
-      (
-        i /
-        PARTICLE_COUNT
-      ) *
-      Math.PI *
-      2;
+  gl.bindBuffer(gl.ARRAY_BUFFER, randomBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, randoms, gl.STATIC_DRAW);
+
+  attributesGenerated = true;
+}
 
 
-    const radius =
-      0.60 +
-      Math.random() * 10.5;
+function computeHeartTargets() {
 
+  const base = Math.min(screenWidth, screenHeight) / 55;
 
-    const sc =
-      radius *
-      (base / 12);
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
 
+    const a = (i / PARTICLE_COUNT) * Math.PI * 2;
 
-    const pos =
-      heart(
-        a,
-        sc
-      );
+    const radius = 0.60 + Math.random() * 10.5;
 
+    const sc = radius * (base / 12);
 
-    const index =
-      i * 2;
+    const pos = heart(a, sc);
 
+    const index = i * 2;
 
-    targets[index] =
-      pos.x;
+    targets[index] = pos.x;
+    targets[index + 1] = pos.y;
 
-    targets[index + 1] =
-      pos.y;
-
-
-    positions[index] =
-      pos.x;
-
-    positions[index + 1] =
-      pos.y;
-
+    positions[index] = pos.x;
+    positions[index + 1] = pos.y;
 
     velocities[index] = 0;
     velocities[index + 1] = 0;
-
-
-    sizes[i] =
-      1.2 +
-      Math.random() * 2.2;
-
-
-    randoms[i] =
-      Math.random();
-
-
-    particleAlpha[i] =
-      0.55 +
-      Math.random() * 0.45;
-
-
-    particlePhase[i] =
-      Math.random() *
-      Math.PI *
-      2;
   }
 
-
-  gl.bindBuffer(
-    gl.ARRAY_BUFFER,
-    positionBuffer
-  );
-
-  gl.bufferSubData(
-    gl.ARRAY_BUFFER,
-    0,
-    positions
-  );
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, positions);
 }
 
 
+function resize() {
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+  screenWidth = window.innerWidth;
+  screenHeight = window.innerHeight;
+
+  canvas.width = screenWidth * dpr;
+  canvas.height = screenHeight * dpr;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+
+  if (!attributesGenerated) {
+    generateParticleAttributes();
+  }
+
+  computeHeartTargets();
+}
+
+window.addEventListener('resize', resize);
+
+
 /* =========================================================
-   KICK FREQUENCY
+   KICK DETECTION (адаптивная версия)
+   ---------------------------------------------------------
+   Раньше пороги были фиксированными числами, подобранными
+   под конкретный трек. Теперь вместо абсолютных чисел
+   считается СРЕДНЕЕ и СТАНДАРТНОЕ ОТКЛОНЕНИЕ энергии за
+   последние ~2 секунды, и порог вычисляется относительно
+   них. Это подстраивается под громкость и динамику
+   ЛЮБОГО трека, а не только того, для которого числа
+   были подобраны вручную.
 ========================================================= */
 
-/*
-   ВАЖНО:
+function getBandRange() {
 
-   Саб 20–80 Hz здесь полностью отсутствует.
+  const binHz = audioCtx.sampleRate / analyser.fftSize;
 
-   Для heartbeat используется ТОЛЬКО:
+  const start = Math.max(0, Math.floor(KICK_BAND_LOW_HZ / binHz));
+  const end = Math.min(dataArray.length, Math.ceil(KICK_BAND_HIGH_HZ / binHz));
 
-   80–200 Hz
-
-   Это диапазон кика, который мы
-   используем для определения удара.
-*/
-
-function getKickEnergy() {
-
-  analyser.getByteFrequencyData(
-    dataArray
-  );
+  return { start, end };
+}
 
 
-  const binHz =
-    audioCtx.sampleRate /
-    analyser.fftSize;
+function getKickEnergy(range) {
 
-
-  const start =
-    Math.max(
-      0,
-      Math.floor(
-        80 / binHz
-      )
-    );
-
-
-  const end =
-    Math.min(
-      dataArray.length,
-      Math.ceil(
-        200 / binHz
-      )
-    );
-
+  analyser.getByteFrequencyData(dataArray);
 
   let sum = 0;
 
-
-  for (
-    let i = start;
-    i < end;
-    i++
-  ) {
-
-    sum +=
-      dataArray[i] / 255;
+  for (let i = range.start; i < range.end; i++) {
+    sum += dataArray[i] / 255;
   }
 
-
-  return (
-    sum /
-    Math.max(
-      1,
-      end - start
-    )
-  );
+  return sum / Math.max(1, range.end - range.start);
 }
 
 
-/* =========================================================
-   KICK SPECTRAL FLUX
-========================================================= */
-
-/*
-   Flux также считаем ТОЛЬКО
-   внутри 80–200 Hz.
-
-   Поэтому высокие частоты,
-   саб и прочий звук не могут
-   сами вызвать heartbeat.
-*/
-
-function getKickFlux() {
-
-  const binHz =
-    audioCtx.sampleRate /
-    analyser.fftSize;
-
-
-  const start =
-    Math.max(
-      0,
-      Math.floor(
-        80 / binHz
-      )
-    );
-
-
-  const end =
-    Math.min(
-      dataArray.length,
-      Math.ceil(
-        200 / binHz
-      )
-    );
-
+function getKickFlux(range) {
 
   let flux = 0;
 
+  for (let i = range.start; i < range.end; i++) {
 
-  for (
-    let i = start;
-    i < end;
-    i++
-  ) {
+    const current = dataArray[i] / 255;
+    const previous = previousSpectrum[i];
 
-    const current =
-      dataArray[i] / 255;
-
-    const previous =
-      previousSpectrum[i];
-
-
-    const diff =
-      current -
-      previous;
-
-
-    /*
-      Нас интересует только
-      появление новой энергии.
-    */
+    const diff = current - previous;
 
     if (diff > 0) {
-
       flux += diff;
     }
 
-
-    previousSpectrum[i] =
-      current;
+    previousSpectrum[i] = current;
   }
 
-
-  return (
-    flux /
-    Math.max(
-      1,
-      end - start
-    )
-  );
+  return flux / Math.max(1, range.end - range.start);
 }
 
 
-/* =========================================================
-   KICK DETECTOR
-========================================================= */
+function computeStats(arr) {
+
+  if (arr.length === 0) {
+    return { mean: 0, std: 0 };
+  }
+
+  let sum = 0;
+
+  for (let i = 0; i < arr.length; i++) {
+    sum += arr[i];
+  }
+
+  const mean = sum / arr.length;
+
+  let variance = 0;
+
+  for (let i = 0; i < arr.length; i++) {
+    const diff = arr[i] - mean;
+    variance += diff * diff;
+  }
+
+  variance /= arr.length;
+
+  return { mean, std: Math.sqrt(variance) };
+}
+
 
 function detectKick() {
 
-  /*
-    Получаем ТОЛЬКО энергию
-    80–200 Hz.
-  */
+  const range = getBandRange();
 
-  const energy =
-    getKickEnergy();
+  const energy = getKickEnergy(range);
+  const flux = getKickFlux(range);
 
+  energyHistory.push(energy);
+  fluxHistory.push(flux);
 
-  /*
-    Получаем резкий прирост
-    энергии именно в 80–200 Hz.
-  */
+  if (energyHistory.length > STATS_WINDOW) energyHistory.shift();
+  if (fluxHistory.length > STATS_WINDOW) fluxHistory.shift();
 
-  const flux =
-    getKickFlux();
+  // недостаточно истории, чтобы посчитать статистику
+  if (energyHistory.length < 20) {
 
+    debugEnergy = energy;
+    debugFlux = flux;
 
-  kickHistory.push(
-    energy
-  );
-
-  fluxHistory.push(
-    flux
-  );
-
-
-  /*
-    Около 300 ms истории.
-  */
-
-  if (
-    kickHistory.length > 18
-  ) {
-
-    kickHistory.shift();
+    return { detected: false };
   }
 
+  const energyStats = computeStats(energyHistory);
+  const fluxStats = computeStats(fluxHistory);
 
-  if (
-    fluxHistory.length > 18
-  ) {
+  const energyThreshold = energyStats.mean + energyStats.std * ENERGY_SENSITIVITY;
+  const fluxThreshold = fluxStats.mean + fluxStats.std * FLUX_SENSITIVITY;
 
-    fluxHistory.shift();
-  }
+  debugEnergy = energy;
+  debugThreshold = energyThreshold;
+  debugFlux = flux;
+  debugFluxThreshold = fluxThreshold;
 
+  const loudEnough = energy > MIN_ENERGY_FLOOR;
+  const energyAboveThreshold = energy > energyThreshold;
+  const fluxAboveThreshold = flux > fluxThreshold;
 
-  /*
-    Нужно немного истории,
-    чтобы понять, был ли резкий
-    скачок относительно предыдущего
-    состояния.
-  */
-
-  if (
-    kickHistory.length < 8
-  ) {
-
-    return {
-      detected: false,
-      strength: 0
-    };
-  }
-
-
-  let energySum = 0;
-
-  for (
-    let i = 0;
-    i < kickHistory.length - 1;
-    i++
-  ) {
-
-    energySum +=
-      kickHistory[i];
-  }
-
-
-  const averageEnergy =
-    energySum /
-    (
-      kickHistory.length - 1
-    );
-
-
-  const rise =
-    energy -
-    averageEnergy;
-
-
-  let fluxSum = 0;
-
-  for (
-    let i = 0;
-    i < fluxHistory.length - 1;
-    i++
-  ) {
-
-    fluxSum +=
-      fluxHistory[i];
-  }
-
-
-  const averageFlux =
-    fluxSum /
-    (
-      fluxHistory.length - 1
-    );
-
-
-  const fluxRise =
-    flux -
-    averageFlux;
-
-
-  /*
-    Кик должен иметь
-    достаточно энергии.
-  */
-
-  const loudEnough =
-    energy > 0.10;
-
-
-  /*
-    Должен быть заметный
-    скачок энергии.
-  */
-
-  const energyAttack =
-    rise > 0.018;
-
-
-  /*
-    Либо заметная атака
-    спектра.
-  */
-
-  const spectralAttack =
-    fluxRise > 0.0025;
-
-
-  const now =
-    performance.now();
-
-
-  const cooldownPassed =
-    now -
-    lastKickTime >
-    KICK_COOLDOWN;
-
-
-  /*
-    Главное условие:
-
-    80–200 Hz достаточно сильные
-    +
-    произошла атака
-    +
-    прошло немного времени
-    с предыдущего кика.
-  */
+  const now = performance.now();
+  const cooldownPassed = (now - lastKickTime) > KICK_COOLDOWN;
 
   const detected =
     loudEnough &&
-    energyAttack &&
-    (
-      spectralAttack ||
-      rise > 0.045
-    ) &&
+    energyAboveThreshold &&
+    fluxAboveThreshold &&
     cooldownPassed;
 
-
   if (!detected) {
-
-    return {
-      detected: false,
-      strength: 0
-    };
+    return { detected: false };
   }
 
+  lastKickTime = now;
 
-  lastKickTime =
-    now;
+  // сила удара: насколько энергия превысила порог, ограничено сверху
+  const overshoot = (energy - energyThreshold) / Math.max(0.01, energyThreshold);
 
+  const strength = Math.min(1, Math.max(0.3, overshoot));
 
-  /*
-    Сила сердцебиения зависит
-    от того, насколько сильно
-    вырос кик.
+  lastKickStrength = strength;
 
-    Ограничиваем значение,
-    чтобы очень громкий кик
-    не разорвал форму сердца.
-  */
-
-  const strength =
-    Math.min(
-      1,
-      Math.max(
-        0.25,
-        rise * 12 +
-        energy * 1.5
-      )
-    );
-
-
-  return {
-    detected: true,
-    strength
-  };
+  return { detected: true, strength };
 }
 
 
-/* =========================================================
-   AUDIO UPDATE
-========================================================= */
-
 function updateAudio() {
 
-  /*
-    Если аудио реально остановлено,
-    никакого анализа.
-  */
-
-  if (
-    !isPlaying ||
-    audio.paused ||
-    audio.ended
-  ) {
-
+  if (!isPlaying) {
     beat = 0;
-
     return;
   }
 
-
-  const kick =
-    detectKick();
-
-
-  /*
-    СЕРДЦЕБИЕНИЕ ПРОИСХОДИТ
-    ТОЛЬКО ЗДЕСЬ.
-
-    Если kick.detected === false,
-    новый heartbeat НЕ создаётся.
-  */
+  const kick = detectKick();
 
   if (kick.detected) {
-
-    beat =
-      kick.strength;
+    beat = kick.strength;
   }
-
-
-  /*
-    После удара сердце
-    быстро возвращается
-    обратно.
-
-    Это не создаёт новые удары —
-    просто затухает уже
-    обнаруженный кик.
-  */
 
   beat *= 0.82;
 }
@@ -1189,203 +860,92 @@ function updateAudio() {
    PARTICLE PHYSICS
 ========================================================= */
 
-function updateParticles(
-  deltaTime
-) {
+function updateParticles(deltaTime) {
 
-  /*
-    НЕТ bassLevel.
+  const targetScale = 1.0 + beat * 0.18;
 
-    Размер сердца меняется
-    исключительно от beat,
-    который создаётся только
-    обнаруженным киком.
-  */
+  heartScale += (targetScale - heartScale) * 0.20;
 
-  const targetScale =
-    1.0 +
-    beat * 0.18;
+  const spring = 0.075;
+  const damping = 0.82;
 
+  const beatImpulse = beat * 0.18;
 
-  heartScale +=
-    (
-      targetScale -
-      heartScale
-    ) * 0.20;
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
 
+    const index = i * 2;
 
-  const spring =
-    0.075;
+    let x = positions[index];
+    let y = positions[index + 1];
 
+    let vx = velocities[index];
+    let vy = velocities[index + 1];
 
-  const damping =
-    0.82;
+    const targetX = targets[index] * heartScale;
+    const targetY = targets[index + 1] * heartScale;
 
+    vx += (targetX - x) * spring;
+    vy += (targetY - y) * spring;
 
-  /*
-    Импульс исключительно
-    от обнаруженного кика.
-  */
+    if (beat > 0.25) {
 
-  const beatImpulse =
-    beat * 0.18;
+      const length = Math.sqrt(x * x + y * y) || 1;
 
+      const nx = x / length;
+      const ny = y / length;
 
-  for (
-    let i = 0;
-    i < PARTICLE_COUNT;
-    i++
-  ) {
-
-    const index =
-      i * 2;
-
-
-    let x =
-      positions[index];
-
-    let y =
-      positions[index + 1];
-
-
-    let vx =
-      velocities[index];
-
-    let vy =
-      velocities[index + 1];
-
-
-    const targetX =
-      targets[index] *
-      heartScale;
-
-
-    const targetY =
-      targets[index + 1] *
-      heartScale;
-
-
-    /*
-      Возврат к форме сердца.
-    */
-
-    vx +=
-      (
-        targetX -
-        x
-      ) * spring;
-
-
-    vy +=
-      (
-        targetY -
-        y
-      ) * spring;
-
-
-    /*
-      Короткий наружный импульс
-      во время heartbeat.
-    */
-
-    if (
-      beat > 0.25
-    ) {
-
-      const length =
-        Math.sqrt(
-          x * x +
-          y * y
-        ) || 1;
-
-
-      const nx =
-        x / length;
-
-      const ny =
-        y / length;
-
-
-      vx +=
-        nx *
-        beatImpulse;
-
-
-      vy +=
-        ny *
-        beatImpulse;
+      vx += nx * beatImpulse;
+      vy += ny * beatImpulse;
     }
 
+    const phase = particlePhase[i];
 
-    /*
-      Микродвижение частиц.
-      Оно не связано с аудио
-      и не создаёт heartbeat.
-    */
+    const micro = Math.sin(performance.now() * 0.0014 + phase) * 0.008;
 
-    const phase =
-      particlePhase[i];
+    vx += micro * 0.02;
+    vy += micro * 0.02;
 
+    x += vx * deltaTime;
+    y += vy * deltaTime;
 
-    const micro =
-      Math.sin(
-        performance.now() * 0.0014 +
-        phase
-      ) *
-      0.008;
+    vx *= damping;
+    vy *= damping;
 
+    positions[index] = x;
+    positions[index + 1] = y;
 
-    vx +=
-      micro *
-      0.02;
-
-
-    vy +=
-      micro *
-      0.02;
-
-
-    x +=
-      vx *
-      deltaTime;
-
-
-    y +=
-      vy *
-      deltaTime;
-
-
-    vx *=
-      damping;
-
-    vy *=
-      damping;
-
-
-    positions[index] =
-      x;
-
-    positions[index + 1] =
-      y;
-
-    velocities[index] =
-      vx;
-
-    velocities[index + 1] =
-      vy;
+    velocities[index] = vx;
+    velocities[index + 1] = vy;
   }
 
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, positions);
+}
 
-  gl.bindBuffer(
-    gl.ARRAY_BUFFER,
-    positionBuffer
-  );
 
-  gl.bufferSubData(
-    gl.ARRAY_BUFFER,
-    0,
-    positions
-  );
+/* =========================================================
+   DEBUG PANEL
+========================================================= */
+
+function renderDebugPanel() {
+
+  if (!debugVisible) return;
+
+  debugFrameCounter++;
+
+  // обновляем текст не каждый кадр, чтобы не грузить DOM
+  if (debugFrameCounter % 3 !== 0) return;
+
+  const energyBar = Math.min(30, Math.round(debugEnergy * 120));
+  const thresholdMark = Math.min(30, Math.round(debugThreshold * 120));
+
+  debugPanel.textContent =
+    'Энергия:    ' + debugEnergy.toFixed(3) + '\n' +
+    'Порог эн.:  ' + debugThreshold.toFixed(3) + '\n' +
+    'Флюкс:      ' + debugFlux.toFixed(4) + '\n' +
+    'Порог фл.:  ' + debugFluxThreshold.toFixed(4) + '\n' +
+    'Beat:       ' + beat.toFixed(2) + '\n' +
+    'Посл. удар: ' + lastKickStrength.toFixed(2);
 }
 
 
@@ -1393,302 +953,37 @@ function updateParticles(
    DRAW
 ========================================================= */
 
-let lastFrameTime =
-  performance.now();
+let lastFrameTime = performance.now();
 
 function draw() {
 
-  const now =
-    performance.now();
+  const now = performance.now();
 
+  const delta = Math.min((now - lastFrameTime) / 16.666, 2);
 
-  const delta =
-    Math.min(
-      (now - lastFrameTime) /
-      16.666,
-      2
-    );
+  lastFrameTime = now;
 
-
-  lastFrameTime =
-    now;
-
-
-  /*
-    Очень важно:
-
-    проверяем не только свой
-    isPlaying, но и реальное
-    состояние audio.paused.
-
-    Поэтому после паузы
-    никакого продолжения
-    анализа быть не может.
-  */
-
-  if (
-    isPlaying &&
-    analyser &&
-    !audio.paused &&
-    !audio.ended
-  ) {
-
+  if (isPlaying && analyser) {
     updateAudio();
-
   } else {
-
-    /*
-      Музыка остановлена.
-
-      Heartbeat сразу исчезает.
-    */
-
     beat *= 0.78;
   }
 
+  updateParticles(delta);
 
-  updateParticles(
-    delta
-  );
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
 
+  gl.uniform1f(scaleLocation, 1);
+  gl.uniform1f(beatLocation, beat);
+  gl.uniform1f(timeLocation, now * 0.001);
 
-  gl.clearColor(
-    0,
-    0,
-    0,
-    1
-  );
+  gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
 
-  gl.clear(
-    gl.COLOR_BUFFER_BIT
-  );
+  renderDebugPanel();
 
-
-  gl.uniform1f(
-    scaleLocation,
-    1
-  );
-
-  gl.uniform1f(
-    beatLocation,
-    beat
-  );
-
-  gl.uniform1f(
-    timeLocation,
-    now * 0.001
-  );
-
-
-  gl.drawArrays(
-    gl.POINTS,
-    0,
-    PARTICLE_COUNT
-  );
-
-
-  requestAnimationFrame(
-    draw
-  );
+  requestAnimationFrame(draw);
 }
-
-
-/* =========================================================
-   AUDIO INITIALIZATION
-========================================================= */
-
-async function initAudio() {
-
-  if (audioCtx) {
-    return;
-  }
-
-
-  audioCtx =
-    new (
-      window.AudioContext ||
-      window.webkitAudioContext
-    )();
-
-
-  const source =
-    audioCtx.createMediaElementSource(
-      audio
-    );
-
-
-  analyser =
-    audioCtx.createAnalyser();
-
-
-  /*
-    Высокое разрешение FFT.
-
-    При 4096:
-    80–200 Hz можно анализировать
-    достаточно подробно.
-  */
-
-  analyser.fftSize =
-    4096;
-
-
-  /*
-    Минимальное сглаживание.
-
-    Нам нужна именно атака кика.
-  */
-
-  analyser.smoothingTimeConstant =
-    0.035;
-
-
-  dataArray =
-    new Uint8Array(
-      analyser.frequencyBinCount
-    );
-
-
-  previousSpectrum =
-    new Float32Array(
-      analyser.frequencyBinCount
-    );
-
-
-  source.connect(
-    analyser
-  );
-
-
-  analyser.connect(
-    audioCtx.destination
-  );
-}
-
-
-/* =========================================================
-   PLAY / PAUSE
-========================================================= */
-
-playBtn.addEventListener(
-  'click',
-  async () => {
-
-    if (!isPlaying) {
-
-      try {
-
-        await initAudio();
-
-
-        if (
-          audioCtx.state ===
-          'suspended'
-        ) {
-
-          await audioCtx.resume();
-        }
-
-
-        /*
-          Перед запуском
-          очищаем старые данные.
-        */
-
-        kickHistory = [];
-
-        fluxHistory = [];
-
-        previousSpectrum.fill(0);
-
-        beat = 0;
-
-        heartScale = 1;
-
-        lastKickTime = 0;
-
-
-        await audio.play();
-
-
-        isPlaying =
-          true;
-
-
-        playBtn.textContent =
-          '⏸ Пауза';
-
-      } catch (error) {
-
-        console.error(
-          error
-        );
-
-        alert(
-          'Не удалось запустить аудио.'
-        );
-      }
-
-
-    } else {
-
-      audio.pause();
-
-      isPlaying =
-        false;
-
-
-      /*
-        Полный сброс heartbeat.
-      */
-
-      beat = 0;
-
-      heartScale = 1;
-
-      kickHistory = [];
-
-      fluxHistory = [];
-
-      previousSpectrum.fill(0);
-
-      lastKickTime = 0;
-
-
-      playBtn.textContent =
-        '▶ Запустить';
-    }
-  }
-);
-
-
-/* =========================================================
-   AUDIO ENDED
-========================================================= */
-
-audio.addEventListener(
-  'ended',
-  () => {
-
-    isPlaying =
-      false;
-
-    beat = 0;
-
-    heartScale = 1;
-
-    kickHistory = [];
-
-    fluxHistory = [];
-
-    previousSpectrum.fill(0);
-
-    lastKickTime = 0;
-
-    playBtn.textContent =
-      '▶ Запустить';
-  }
-);
 
 
 /* =========================================================
@@ -1697,9 +992,9 @@ audio.addEventListener(
 
 resize();
 
-requestAnimationFrame(
-  draw
-);
+loadAudio();
+
+requestAnimationFrame(draw);
 
 </script>
 
