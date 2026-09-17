@@ -397,6 +397,7 @@ const particlePhase = new Float32Array(PARTICLE_COUNT);
 
 let beat = 0;
 let heartScale = 1;
+let appearAlpha = 0;   // 0 = точки невидимы, 1 = полностью видимы; плавно тянется к isPlaying
 
 let energyHistory = [];
 let fluxHistory = [];
@@ -436,6 +437,7 @@ uniform vec2 u_resolution;
 uniform float u_scale;
 uniform float u_beat;
 uniform float u_time;
+uniform float u_appear;
 
 varying float v_alpha;
 varying float v_random;
@@ -466,7 +468,7 @@ void main() {
 
     gl_PointSize = a_size * (1.0 + u_beat * 0.16);
 
-    v_alpha = a_alpha * (0.78 + u_beat * 0.22);
+    v_alpha = a_alpha * (0.78 + u_beat * 0.22) * u_appear;
     v_random = a_random;
 }
 `;
@@ -548,6 +550,7 @@ const resolutionLocation = gl.getUniformLocation(program, 'u_resolution');
 const scaleLocation = gl.getUniformLocation(program, 'u_scale');
 const beatLocation = gl.getUniformLocation(program, 'u_beat');
 const timeLocation = gl.getUniformLocation(program, 'u_time');
+const appearLocation = gl.getUniformLocation(program, 'u_appear');
 
 
 /* =========================================================
@@ -978,12 +981,17 @@ function draw() {
 
   updateParticles(delta);
 
+  // Плавное появление/угасание точек в зависимости от того, играет ли музыка.
+  const appearTarget = isPlaying ? 1 : 0;
+  appearAlpha += (appearTarget - appearAlpha) * 0.035;
+
   gl.clearColor(0, 0, 0, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
   gl.uniform1f(scaleLocation, 1);
   gl.uniform1f(beatLocation, beat);
   gl.uniform1f(timeLocation, now * 0.001);
+  gl.uniform1f(appearLocation, appearAlpha);
 
   gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
 
