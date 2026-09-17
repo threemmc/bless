@@ -449,7 +449,14 @@ void main() {
 
     position *= u_scale;
 
-    vec2 zeroToOne = position / u_resolution;
+    /* Координаты сердца считаются как смещение от центра
+       (heart() возвращает значения вокруг нуля), поэтому
+       перед переводом в clip-space нужно сдвинуть их
+       на половину разрешения экрана — иначе (0,0) уезжает
+       в левый нижний угол вместо центра. */
+    vec2 centered = position + u_resolution * 0.5;
+
+    vec2 zeroToOne = centered / u_resolution;
     vec2 zeroToTwo = zeroToOne * 2.0;
     vec2 clipSpace = zeroToTwo - 1.0;
 
@@ -637,7 +644,7 @@ function generateParticleAttributes() {
 
 function computeHeartTargets() {
 
-  const base = Math.min(screenWidth, screenHeight) / 55;
+  const base = Math.min(canvas.width, canvas.height) / 55;
 
   for (let i = 0; i < PARTICLE_COUNT; i++) {
 
